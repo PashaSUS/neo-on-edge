@@ -1,0 +1,27 @@
+# Local secrets and generated output
+.env
+.env.*
+!.env.example
+build-output/
+
+# Frontend build/dependency output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/*.log
+frontend/npm-debug.log*
+
+# .NET build output
+backend/**/bin/
+backend/**/obj/
+backend/TestResults/
+backend/*.user
+backend/*.suo
+backend/*.log
+
+# Editor/OS noise
+.vs/
+.vscode/
+.DS_Store
+Thumbs.db

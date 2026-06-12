@@ -1,0 +1,30 @@
+   0.023011000s  INFO prepare_target{force=false package_id=neoedge v1.0.0 (C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\contract) target="neoedge"}: cargo::core::compiler::fingerprint: fingerprint error for neoedge v1.0.0 (C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\contract)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("neoedge", ["cdylib"], "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\contract\\src\\lib.rs", Edition2021) }
+   0.023175100s  INFO prepare_target{force=false package_id=neoedge v1.0.0 (C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\contract) target="neoedge"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\contract\target\debug\.fingerprint\neoedge-1c78493dbaaee9f4\lib-neoedge`
+
+Caused by:
+    The system cannot find the file specified. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+    Checking neoedge v1.0.0 (C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\contract)
+error: could not compile `neoedge` (lib) due to 3 previous errors

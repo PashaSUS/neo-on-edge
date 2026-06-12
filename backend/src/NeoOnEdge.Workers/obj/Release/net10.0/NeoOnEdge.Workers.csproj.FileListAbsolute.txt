@@ -1,0 +1,15 @@
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\bin\Release\net10.0\NeoOnEdge.Workers.deps.json
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\bin\Release\net10.0\NeoOnEdge.Workers.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\bin\Release\net10.0\NeoOnEdge.Workers.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\bin\Release\net10.0\NeoOnEdge.Core.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\bin\Release\net10.0\NeoOnEdge.Core.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.csproj.AssemblyReference.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.AssemblyInfoInputs.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.AssemblyInfo.cs
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.csproj.CoreCompileInputs.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdg.6B410768.Up2Date
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\refint\NeoOnEdge.Workers.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\NeoOnEdge.Workers.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Release\net10.0\ref\NeoOnEdge.Workers.dll

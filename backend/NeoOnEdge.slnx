@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/NeoOnEdge.Api/NeoOnEdge.Api.csproj" />
+    <Project Path="src/NeoOnEdge.Core/NeoOnEdge.Core.csproj" />
+    <Project Path="src/NeoOnEdge.Indexer/NeoOnEdge.Indexer.csproj" />
+    <Project Path="src/NeoOnEdge.Workers/NeoOnEdge.Workers.csproj" />
+  </Folder>
+</Solution>

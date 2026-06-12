@@ -1,0 +1,21 @@
+[package]
+name = "neoedge"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "NeoOnEdge — WAX DEX aggregator / multi-hop swap router (Rust)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+eosio-contract = { path = "../../rust-to-wasm/rust-to-wasm/eosio-contract", version = "1.0.0" }
+eosio-core     = { path = "../../rust-to-wasm/rust-to-wasm/eosio-core", version = "1.0.0" }
+eosio-macros   = { path = "../../rust-to-wasm/rust-to-wasm/eosio-macros", version = "1.0.0" }
+
+[profile.release]
+opt-level     = "z"
+lto           = true
+codegen-units = 1
+strip         = true
+overflow-checks = false

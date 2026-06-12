@@ -1,0 +1,12 @@
+[registries.nexus]
+index = "sparse+https://nexus.pasha.ovh/repository/cargo/"
+credential-provider = "cargo:token"
+
+[target.wasm32v1-none]
+rustflags = [
+    "-C", "link-arg=-zstack-size=8192",
+    "-C", "link-arg=--no-entry",
+    "-C", "link-arg=--export=apply",
+    "-C", "link-arg=--allow-undefined",
+    "-C", "target-feature=-sign-ext,-bulk-memory,-mutable-globals,-nontrapping-fptoint,-reference-types,-multivalue",
+]

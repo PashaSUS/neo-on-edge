@@ -1,0 +1,6 @@
+@NeoOnEdge.Api_HostAddress = http://localhost:5063
+
+GET {{NeoOnEdge.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

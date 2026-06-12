@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-neoedge}
+      POSTGRES_USER:     ${POSTGRES_USER:-neoedge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neoedge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  seq:
+    image: datalust/seq:latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      SEQ_FIRSTRUN_NOAUTHENTICATION: "true"
+    volumes:
+      - seq_data:/data
+    ports:
+      - "${SEQ_HOST_PORT:-5404}:80"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seq:
+        condition: service_started
+    environment:
+      App__PostgresConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-neoedge};Username=${POSTGRES_USER:-neoedge};Password=${POSTGRES_PASSWORD:?required}"
+      App__RedisConnectionString:    "redis:6379"
+      App__WaxShipEndpoint:          "${WAX_SHIP_ENDPOINT:-}"
+      App__WaxShipEndpoints:         "${WAX_SHIP_ENDPOINTS:-wss://wax.eosphere.io/ship,wss://wax.eu.eosamsterdam.net/ship,wss://api.waxsweden.org/ship}"
+      App__HyperionEndpoint:         "${HYPERION_ENDPOINT:-https://wax.eosusa.io}"
+      App__ShipEnabled:              "${SHIP_ENABLED:-true}"
+      App__HyperionFallbackEnabled:  "${HYPERION_FALLBACK_ENABLED:-true}"
+      App__HyperionFallbackIntervalSeconds: "${HYPERION_FALLBACK_INTERVAL_SECONDS:-60}"
+      App__HyperionInitialLookbackHours: "${HYPERION_INITIAL_LOOKBACK_HOURS:-168}"
+      App__HyperionRequestTimeoutSeconds: "${HYPERION_REQUEST_TIMEOUT_SECONDS:-20}"
+      App__ShipReconnectDelaySeconds: "${SHIP_RECONNECT_DELAY_SECONDS:-5}"
+      App__StartBlock:               "${START_BLOCK:-0}"
+      App__ReplayEnabled:            "${REPLAY_ENABLED:-true}"
+      App__ContractAccount:          "${CONTRACT_ACCOUNT:-swap.neo}"
+      App__NeoRouteFeeBps:           "${NEO_ROUTE_FEE_BPS:-30}"
+      App__AdminSecret:              "${ADMIN_SECRET:?required}"
+      App__AllowedOrigins:           "${ALLOWED_ORIGINS:-*}"
+      App__AlcorEndpoint:            "${ALCOR_ENDPOINT:-https://wax.alcor.exchange}"
+      App__WaxRpcEndpoint:           "${WAX_RPC_ENDPOINT:-https://wax.greymass.com}"
+      App__DataRetentionDays:        "${DATA_RETENTION_DAYS:-30}"
+      App__DataRetentionCleanupIntervalHours: "${DATA_RETENTION_CLEANUP_INTERVAL_HOURS:-6}"
+      App__ArbitrageScannerEnabled:  "${ARBITRAGE_SCANNER_ENABLED:-false}"
+      App__ArbitrageDiscordWebhookUrl: "${ARBITRAGE_DISCORD_WEBHOOK_URL:-}"
+      App__ArbitrageScanIntervalSeconds: "${ARBITRAGE_SCAN_INTERVAL_SECONDS:-300}"
+      App__ArbitrageMaxInputWax:     "${ARBITRAGE_MAX_INPUT_WAX:-100}"
+      App__ArbitrageProbeWaxAmounts: "${ARBITRAGE_PROBE_WAX_AMOUNTS:-5,10,25,50,100}"
+      App__ArbitrageSlippage:        "${ARBITRAGE_SLIPPAGE:-2}"
+      App__ArbitrageMaxHops:         "${ARBITRAGE_MAX_HOPS:-6}"
+      App__ArbitrageMaxTokensPerScan: "${ARBITRAGE_MAX_TOKENS_PER_SCAN:-150}"
+      App__ArbitrageMinProfitPercent: "${ARBITRAGE_MIN_PROFIT_PERCENT:-0.1}"
+      App__ArbitrageMinProfitWax:    "${ARBITRAGE_MIN_PROFIT_WAX:-0.01}"
+      App__ArbitrageAlertTopCount:   "${ARBITRAGE_ALERT_TOP_COUNT:-10}"
+      App__ArbitrageAlertCooldownMinutes: "${ARBITRAGE_ALERT_COOLDOWN_MINUTES:-30}"
+      App__ArbitrageNoOpportunityHeartbeatMinutes: "${ARBITRAGE_NO_OPPORTUNITY_HEARTBEAT_MINUTES:-60}"
+      App__ArbitrageRequestDelayMilliseconds: "${ARBITRAGE_REQUEST_DELAY_MILLISECONDS:-100}"
+      App__SeqEnabled:               "${SEQ_ENABLED:-false}"
+      App__SeqUrl:                   "${SEQ_URL:-}"
+      App__SeqApiKey:                "${SEQ_API_KEY:-}"
+      ASPNETCORE_URLS:               "http://+:5000"
+    ports:
+      - "${API_HOST_PORT:-15174}:5000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_CONTRACT_ACCOUNT: "${CONTRACT_ACCOUNT:-swap.neo}"
+        VITE_API_BASE_URL: "${PUBLIC_API_BASE_URL:-/api}"
+        VITE_ALCOR_ENDPOINT: "${ALCOR_ENDPOINT:-https://wax.alcor.exchange}"
+        VITE_HUB_URL: "${PUBLIC_HUB_URL:-/hub}"
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${APP_HOST_PORT:-15173}:3000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  seq_data:

@@ -1,0 +1,54 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\backend\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{FFA3BAE4-93C6-16F2-28DF-BE6C981D7A5A}|src\\NeoOnEdge.Workers\\NeoOnEdge.Workers.csproj|c:\\users\\pasag\\desktop\\sus projects\\neo-on-edge\\backend\\src\\neoonedge.workers\\klinesworker.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{FFA3BAE4-93C6-16F2-28DF-BE6C981D7A5A}|src\\NeoOnEdge.Workers\\NeoOnEdge.Workers.csproj|solutionrelative:src\\neoonedge.workers\\klinesworker.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{FFA3BAE4-93C6-16F2-28DF-BE6C981D7A5A}|src\\NeoOnEdge.Workers\\NeoOnEdge.Workers.csproj|c:\\users\\pasag\\desktop\\sus projects\\neo-on-edge\\backend\\src\\neoonedge.workers\\statsworker.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{FFA3BAE4-93C6-16F2-28DF-BE6C981D7A5A}|src\\NeoOnEdge.Workers\\NeoOnEdge.Workers.csproj|solutionrelative:src\\neoonedge.workers\\statsworker.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 1,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "StatsWorker.cs",
+              "DocumentMoniker": "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\backend\\src\\NeoOnEdge.Workers\\StatsWorker.cs",
+              "RelativeDocumentMoniker": "src\\NeoOnEdge.Workers\\StatsWorker.cs",
+              "ToolTip": "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\backend\\src\\NeoOnEdge.Workers\\StatsWorker.cs",
+              "RelativeToolTip": "src\\NeoOnEdge.Workers\\StatsWorker.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-05-29T13:15:39.851Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "KlinesWorker.cs",
+              "DocumentMoniker": "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\backend\\src\\NeoOnEdge.Workers\\KlinesWorker.cs",
+              "RelativeDocumentMoniker": "src\\NeoOnEdge.Workers\\KlinesWorker.cs",
+              "ToolTip": "C:\\Users\\pasag\\Desktop\\SUS Projects\\neo-on-edge\\backend\\src\\NeoOnEdge.Workers\\KlinesWorker.cs",
+              "RelativeToolTip": "src\\NeoOnEdge.Workers\\KlinesWorker.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAANAAAAAqAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-05-29T13:15:35.824Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

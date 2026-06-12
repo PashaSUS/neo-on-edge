@@ -1,0 +1,15 @@
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.csproj.AssemblyReference.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.AssemblyInfoInputs.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.AssemblyInfo.cs
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.csproj.CoreCompileInputs.cache
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\bin\Release\net9.0\NeoOnEdge.Indexer.deps.json
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\bin\Release\net9.0\NeoOnEdge.Indexer.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\bin\Release\net9.0\NeoOnEdge.Indexer.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\bin\Release\net9.0\NeoOnEdge.Core.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\bin\Release\net9.0\NeoOnEdge.Core.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdg.8CDCEE27.Up2Date
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\refint\NeoOnEdge.Indexer.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\NeoOnEdge.Indexer.pdb
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Release\net9.0\ref\NeoOnEdge.Indexer.dll
