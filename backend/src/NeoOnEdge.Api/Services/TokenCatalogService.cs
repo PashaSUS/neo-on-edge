@@ -43,6 +43,12 @@ public sealed class TokenCatalogService(
     public async Task<IReadOnlyList<TokenCatalogItem>> GetTokensAsync(AppDbContext db, CancellationToken ct = default)
     {
         var tokens = new Dictionary<string, TokenCatalogItem>(StringComparer.OrdinalIgnoreCase);
+        var excluded = await db.RouteExcludedTokens.AsNoTracking()
+            .Select(x => new { x.Contract, x.Symbol })
+            .ToListAsync(ct);
+        var excludedKeys = excluded
+            .Select(x => BuildExclusionKey(x.Contract, x.Symbol))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var token in WellKnownTokens())
             tokens[token.Id] = token;
@@ -55,6 +61,7 @@ public sealed class TokenCatalogService(
 
         return tokens.Values
             .Where(t => !string.IsNullOrWhiteSpace(t.Contract) && !string.IsNullOrWhiteSpace(t.Symbol))
+            .Where(t => !excludedKeys.Contains(BuildExclusionKey(t.Contract, t.Symbol)))
             .OrderByDescending(t => t.Symbol == "WAX" && t.Contract == "eosio.token")
             .ThenByDescending(t => t.PopularityScore)
             .ThenByDescending(t => t.IsTrusted)
@@ -184,6 +191,9 @@ public sealed class TokenCatalogService(
     ];
 
     private static string BuildId(string symbol, string contract) => $"{symbol.ToLowerInvariant()}-{contract}";
+
+    private static string BuildExclusionKey(string contract, string symbol)
+        => $"{contract.Trim().ToLowerInvariant()}:{symbol.Trim().ToUpperInvariant()}";
 
     private static decimal GetAlcorPopularityScore(AlcorTokenDto token)
     {

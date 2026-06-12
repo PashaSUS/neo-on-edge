@@ -37,6 +37,13 @@ public class AppSettings
     public int ArbitrageAlertCooldownMinutes { get; set; } = 30;
     public int ArbitrageNoOpportunityHeartbeatMinutes { get; set; } = 60;
     public int ArbitrageRequestDelayMilliseconds { get; set; } = 100;
+    public bool ArbitrageExecutionEnabled { get; set; } = false;
+    public string ArbitrageAccount { get; set; } = "";
+    public string ArbitrageExecutorUrl { get; set; } = "http://localhost:8787";
+    public string ArbitrageExecutorSecret { get; set; } = "";
+    public decimal ArbitrageMaxExecutionWax { get; set; } = 5m;
+    public int ArbitrageExecutionCooldownMinutes { get; set; } = 30;
+    public int ArbitrageBalanceWaitSeconds { get; set; } = 30;
     // Seq logging
     public bool SeqEnabled { get; set; } = false;
     public string SeqUrl { get; set; } = "";

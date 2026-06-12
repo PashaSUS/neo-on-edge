@@ -13,3 +13,4 @@ C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\ob
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Debug\net10.0\refint\NeoOnEdge.Indexer.dll
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Debug\net10.0\NeoOnEdge.Indexer.pdb
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Debug\net10.0\ref\NeoOnEdge.Indexer.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Indexer\obj\Debug\net10.0\NeoOnEdge.Indexer.sourcelink.json

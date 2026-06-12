@@ -234,25 +234,65 @@ if ($deployContract) {
 }
 
 $scannerDefault = To-Bool (Get-ConfiguredValue $values "ARBITRAGE_SCANNER_ENABLED" "false") $false
-$enableScanner = Read-YesNo "Enable Discord arbitrage monitor" $scannerDefault
+$enableScanner = Read-YesNo "Enable arbitrage scanner" $scannerDefault
 $discordWebhook = Get-ConfiguredValue $values "ARBITRAGE_DISCORD_WEBHOOK_URL" ""
 if ($enableScanner) {
-    if (![string]::IsNullOrWhiteSpace($discordWebhook)) {
-        $keepWebhook = Read-YesNo "Keep the existing Discord webhook URL from .env" $true
-        if (!$keepWebhook) {
-            $discordWebhook = ""
+    $enableDiscord = Read-YesNo "Send scanner alerts to Discord" (![string]::IsNullOrWhiteSpace($discordWebhook))
+    if ($enableDiscord) {
+        if (![string]::IsNullOrWhiteSpace($discordWebhook)) {
+            $keepWebhook = Read-YesNo "Keep the existing Discord webhook URL from .env" $true
+            if (!$keepWebhook) {
+                $discordWebhook = ""
+            }
+        }
+
+        while ([string]::IsNullOrWhiteSpace($discordWebhook)) {
+            $discordWebhook = Read-HiddenText "Discord webhook URL (hidden)"
+            if ([string]::IsNullOrWhiteSpace($discordWebhook)) {
+                Write-Host "Discord webhook URL is required when Discord alerts are enabled."
+            }
         }
     }
-
-    while ([string]::IsNullOrWhiteSpace($discordWebhook)) {
-        $discordWebhook = Read-HiddenText "Discord webhook URL (hidden)"
-        if ([string]::IsNullOrWhiteSpace($discordWebhook)) {
-            Write-Host "Discord webhook URL is required when the monitor is enabled."
-        }
+    else {
+        $discordWebhook = ""
     }
 }
 else {
     $discordWebhook = ""
+}
+
+$executionDefault = $enableScanner -and (To-Bool (Get-ConfiguredValue $values "ARBITRAGE_EXECUTION_ENABLED" "false") $false)
+$enableExecution = $false
+$arbitrageAccount = Get-ConfiguredValue $values "ARBITRAGE_ACCOUNT" ""
+$arbitragePermission = Get-ConfiguredValue $values "ARBITRAGE_PERMISSION" "active"
+$arbitragePrivateKey = Get-ConfiguredValue $values "ARBITRAGE_PRIVATE_KEY" ""
+$executorSecret = Get-ConfiguredValue $values "ARBITRAGE_EXECUTOR_SECRET" ""
+if ($enableScanner) {
+    $enableExecution = Read-YesNo "Allow the scanner to execute trades automatically" $executionDefault
+}
+if ($enableExecution) {
+    while ([string]::IsNullOrWhiteSpace($arbitrageAccount)) {
+        $arbitrageAccount = Read-Text "Arbitrage WAX account"
+    }
+    $arbitragePermission = Read-Text "Arbitrage account permission" $arbitragePermission
+
+    if (![string]::IsNullOrWhiteSpace($arbitragePrivateKey)) {
+        $keepArbitrageKey = Read-YesNo "Keep the existing arbitrage private key from .env" $true
+        if (!$keepArbitrageKey) {
+            $arbitragePrivateKey = ""
+        }
+    }
+    while ([string]::IsNullOrWhiteSpace($arbitragePrivateKey)) {
+        $arbitragePrivateKey = Read-HiddenText "Arbitrage private key (hidden)"
+        if ([string]::IsNullOrWhiteSpace($arbitragePrivateKey)) {
+            Write-Host "A private key is required for automatic execution."
+        }
+    }
+
+    if (Needs-GeneratedSecret $executorSecret) {
+        $executorSecret = New-Secret 48
+        Write-Host "Generated arbitrage executor secret."
+    }
 }
 
 $postgresPassword = Get-ConfiguredValue $values "POSTGRES_PASSWORD" ""
@@ -333,6 +373,14 @@ ARBITRAGE_ALERT_TOP_COUNT=$(Get-ConfiguredValue $values "ARBITRAGE_ALERT_TOP_COU
 ARBITRAGE_ALERT_COOLDOWN_MINUTES=$(Get-ConfiguredValue $values "ARBITRAGE_ALERT_COOLDOWN_MINUTES" "30")
 ARBITRAGE_NO_OPPORTUNITY_HEARTBEAT_MINUTES=$(Get-ConfiguredValue $values "ARBITRAGE_NO_OPPORTUNITY_HEARTBEAT_MINUTES" "60")
 ARBITRAGE_REQUEST_DELAY_MILLISECONDS=$(Get-ConfiguredValue $values "ARBITRAGE_REQUEST_DELAY_MILLISECONDS" "100")
+ARBITRAGE_EXECUTION_ENABLED=$(Bool-Text $enableExecution)
+ARBITRAGE_ACCOUNT=$arbitrageAccount
+ARBITRAGE_PERMISSION=$arbitragePermission
+ARBITRAGE_PRIVATE_KEY=$arbitragePrivateKey
+ARBITRAGE_EXECUTOR_SECRET=$executorSecret
+ARBITRAGE_MAX_EXECUTION_WAX=$(Get-ConfiguredValue $values "ARBITRAGE_MAX_EXECUTION_WAX" "5")
+ARBITRAGE_EXECUTION_COOLDOWN_MINUTES=$(Get-ConfiguredValue $values "ARBITRAGE_EXECUTION_COOLDOWN_MINUTES" "30")
+ARBITRAGE_BALANCE_WAIT_SECONDS=$(Get-ConfiguredValue $values "ARBITRAGE_BALANCE_WAIT_SECONDS" "30")
 "@
 
 Set-Content -Path $envPath -Value $envText -Encoding ASCII

@@ -14,7 +14,8 @@ public sealed class ArbitrageScannerWorker(
     IServiceScopeFactory scopes,
     IOptions<AppSettings> settings,
     IConnectionMultiplexer redis,
-    IHttpClientFactory httpFactory) : BackgroundService
+    IHttpClientFactory httpFactory,
+    ArbitrageExecutionService execution) : BackgroundService
 {
     private const int WaxPrecision = 8;
     private const int MaxArbitrageHops = 3;
@@ -38,9 +39,16 @@ public sealed class ArbitrageScannerWorker(
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Value.ArbitrageDiscordWebhookUrl))
+        if (string.IsNullOrWhiteSpace(settings.Value.ArbitrageDiscordWebhookUrl) &&
+            !settings.Value.ArbitrageExecutionEnabled)
         {
-            log.LogWarning("Arbitrage scanner is enabled but no Discord webhook URL is configured");
+            log.LogWarning("Arbitrage scanner is enabled but neither Discord alerts nor automatic execution are configured");
+            return;
+        }
+
+        if (settings.Value.ArbitrageExecutionEnabled && !execution.IsConfigured)
+        {
+            log.LogError("Automatic arbitrage execution is enabled but the account or executor secret is missing");
             return;
         }
 
@@ -210,6 +218,7 @@ public sealed class ArbitrageScannerWorker(
         if (top.Length > 0)
         {
             await PostOpportunities(top, candidates.Length, routeLookups, ct);
+            await TryExecuteTopOpportunityAsync(top, wax, alcorRouter, neoRouter, cfg, ct);
             log.LogInformation(
                 "Arbitrage scan found {Count} dry-run opportunities across {Candidates} tokens (alerted={Alerted}, rejectedUnsafeNeoRoutes={RejectedUnsafeNeoRoutes}, rejectedSuspiciousRoundTrips={RejectedSuspiciousRoundTrips}, neoSuppressedForContractSafety={NeoSuppressedForContractSafety})",
                 opportunities.Count,
@@ -243,7 +252,9 @@ public sealed class ArbitrageScannerWorker(
         bool includeNeoRoutes,
         CancellationToken ct)
     {
-        var receiver = cfg.ContractAccount;
+        var receiver = cfg.ArbitrageExecutionEnabled && !string.IsNullOrWhiteSpace(cfg.ArbitrageAccount)
+            ? cfg.ArbitrageAccount
+            : cfg.ContractAccount;
         var quotes = new List<RouteQuote>(2);
         var maxHops = EffectiveArbitrageMaxHops(cfg);
         var lookupCount = 0;
@@ -267,6 +278,7 @@ public sealed class ArbitrageScannerWorker(
                 alcor.Output,
                 outputPrecision,
                 alcor.Memo,
+                "swap.alcor",
                 Math.Max(1, alcor.Route.Length),
                 alcor.Route.Length > 0 ? string.Join(" -> ", alcor.Route.Select(x => $"pool {x}")) : "router",
                 [new RouteLeg("Alcor", ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(alcor.Output), Math.Max(1, alcor.Route.Length), alcor.Route.Length > 0 ? string.Join(" -> ", alcor.Route.Select(x => $"pool {x}")) : "router")]);
@@ -298,6 +310,7 @@ public sealed class ArbitrageScannerWorker(
                     neo.Output,
                     outputPrecision,
                     neo.Memo,
+                    cfg.ContractAccount,
                     Math.Max(1, neo.Steps.Count),
                     neoSteps,
                     [new RouteLeg("NeoOnEdge", ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(neo.Output), Math.Max(1, neo.Steps.Count), neoSteps)]);
@@ -410,6 +423,7 @@ public sealed class ArbitrageScannerWorker(
                 outputRaw.Value,
                 FormatTokenAmount(totalOutput, outputPrecision),
                 "split-dry-run",
+                "",
                 legs.Length,
                 FormatSplitSteps(legs),
                 legs);
@@ -427,6 +441,7 @@ public sealed class ArbitrageScannerWorker(
         string output,
         int outputPrecision,
         string memo,
+        string contract,
         int hops,
         string steps,
         IReadOnlyList<RouteLeg> legs)
@@ -436,7 +451,117 @@ public sealed class ArbitrageScannerWorker(
         if (outputRaw is null || outputAmount <= 0)
             return;
 
-        quotes.Add(new RouteQuote(source, outputAmount, outputRaw.Value, output, memo, hops, steps, legs));
+        quotes.Add(new RouteQuote(source, outputAmount, outputRaw.Value, output, memo, contract, hops, steps, legs));
+    }
+
+    private async Task TryExecuteTopOpportunityAsync(
+        IReadOnlyList<ArbitrageOpportunity> opportunities,
+        TokenCatalogItem wax,
+        AlcorRouterService alcorRouter,
+        NeoRouteQuoteService neoRouter,
+        AppSettings cfg,
+        CancellationToken ct)
+    {
+        if (!cfg.ArbitrageExecutionEnabled || !execution.IsConfigured)
+            return;
+
+        var opportunity = opportunities.FirstOrDefault(x =>
+            x.InputWax <= cfg.ArbitrageMaxExecutionWax &&
+            IsDirectExecutableRoute(x.BuyRoute) &&
+            IsDirectExecutableRoute(x.SellRoute));
+        if (opportunity is null)
+            return;
+
+        var cooldown = TimeSpan.FromMinutes(Math.Clamp(cfg.ArbitrageExecutionCooldownMinutes, 1, 1_440));
+        var lockKey = $"arbitrage:execution:{opportunity.Token.Id}";
+        if (!await _cache.StringSetAsync(lockKey, "1", cooldown, When.NotExists))
+            return;
+
+        try
+        {
+            var beforeTokenBalance = await execution.GetBalanceAsync(opportunity.Token, ct);
+            var inputRaw = ToRawAmount(opportunity.InputWax, WaxPrecision)
+                ?? throw new InvalidOperationException("Could not convert arbitrage WAX input to a raw amount.");
+
+            var buyTransaction = await execution.TransferAsync(
+                wax,
+                inputRaw,
+                opportunity.BuyRoute.Contract,
+                opportunity.BuyRoute.Memo,
+                ct);
+
+            var receivedToken = await WaitForBalanceIncreaseAsync(
+                opportunity.Token,
+                beforeTokenBalance,
+                cfg.ArbitrageBalanceWaitSeconds,
+                ct);
+            var receivedRaw = ToRawAmount(receivedToken, opportunity.Token.Precision);
+            if (receivedRaw is null)
+                throw new InvalidOperationException($"Buy transaction {buyTransaction} produced no observable {opportunity.Token.Symbol} balance increase.");
+
+            var sellCandidates = await GetQuoteCandidatesAsync(
+                alcorRouter,
+                neoRouter,
+                opportunity.Token.Id,
+                wax.Id,
+                receivedRaw.Value,
+                opportunity.Token.Precision,
+                WaxPrecision,
+                cfg,
+                IsTokenSafeForNeoArbitrage(opportunity.Token),
+                ct);
+            var sellRoute = sellCandidates.Routes
+                .Where(IsDirectExecutableRoute)
+                .OrderByDescending(x => x.OutputAmount)
+                .FirstOrDefault()
+                ?? throw new InvalidOperationException("No executable unwind route was available after the buy leg.");
+
+            var sellTransaction = await execution.TransferAsync(
+                opportunity.Token,
+                receivedRaw.Value,
+                sellRoute.Contract,
+                sellRoute.Memo,
+                ct);
+
+            log.LogWarning(
+                "Executed arbitrage round trip for {Token}: input={InputWax} WAX expectedFinal={ExpectedFinalWax} WAX buyTrx={BuyTransaction} sellTrx={SellTransaction}",
+                opportunity.Token.Id,
+                opportunity.InputWax,
+                sellRoute.OutputAmount,
+                buyTransaction,
+                sellTransaction);
+
+            await SendDiscordMessage(
+                $"**NeoOnEdge arbitrage executed**\n" +
+                $"{FormatWax(opportunity.InputWax)} WAX -> {opportunity.Token.Symbol} -> expected {FormatWax(sellRoute.OutputAmount)} WAX\n" +
+                $"Buy: `{buyTransaction}`\nSell: `{sellTransaction}`",
+                ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Automatic arbitrage execution failed for {Token}", opportunity.Token.Id);
+            await SendDiscordMessage(
+                $"**NeoOnEdge automatic arbitrage failed**\nToken: {opportunity.Token.Id}\nError: {ex.Message}",
+                ct);
+        }
+    }
+
+    private async Task<decimal> WaitForBalanceIncreaseAsync(
+        TokenCatalogItem token,
+        decimal previousBalance,
+        int timeoutSeconds,
+        CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(timeoutSeconds, 5, 120));
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            var balance = await execution.GetBalanceAsync(token, ct);
+            if (balance > previousBalance)
+                return balance - previousBalance;
+        }
+
+        return 0;
     }
 
     private async Task PostOpportunities(
@@ -506,6 +631,9 @@ public sealed class ArbitrageScannerWorker(
 
     private async Task SendDiscordMessage(string content, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(settings.Value.ArbitrageDiscordWebhookUrl))
+            return;
+
         if (content.Length > 1_900)
             content = content[..1_850] + "\n...truncated";
 
@@ -634,6 +762,11 @@ public sealed class ArbitrageScannerWorker(
         => route.Source.Equals("NeoOnEdge", StringComparison.OrdinalIgnoreCase) ||
            route.Legs.Any(leg => leg.Source.Equals("NeoOnEdge", StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsDirectExecutableRoute(RouteQuote route)
+        => !route.Source.Equals("Split", StringComparison.OrdinalIgnoreCase) &&
+           !string.IsNullOrWhiteSpace(route.Contract) &&
+           !string.IsNullOrWhiteSpace(route.Memo);
+
     private static string FormatWax(decimal value)
         => value.ToString("0.########", CultureInfo.InvariantCulture);
 
@@ -658,6 +791,7 @@ public sealed class ArbitrageScannerWorker(
         long OutputRaw,
         string OutputDisplay,
         string Memo,
+        string Contract,
         int Hops,
         string Steps,
         IReadOnlyList<RouteLeg> Legs);

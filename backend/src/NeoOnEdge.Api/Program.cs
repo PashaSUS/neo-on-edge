@@ -108,6 +108,7 @@ builder.Services.AddHostedService<StatsWorker>();
 builder.Services.AddHostedService<RetentionCleanupWorker>();
 builder.Services.AddScoped<TokenCatalogService>();
 builder.Services.AddScoped<NeoRouteQuoteService>();
+builder.Services.AddSingleton<ArbitrageExecutionService>();
 builder.Services.AddHostedService<ArbitrageScannerWorker>();
 
 // ── Alcor router service ───────────────────────────────────────────────────
@@ -127,6 +128,14 @@ builder.Services.AddHttpClient("wax-rpc", (sp, client) =>
         new MediaTypeWithQualityHeaderValue("application/json"));
     client.Timeout = TimeSpan.FromSeconds(20);
 });
+builder.Services.AddHttpClient("arbitrage-executor", (sp, client) =>
+{
+    var settings = sp.GetRequiredService<IOptions<AppSettings>>().Value;
+    client.BaseAddress = new Uri(settings.ArbitrageExecutorUrl);
+    client.DefaultRequestHeaders.Accept.Add(
+        new MediaTypeWithQualityHeaderValue("application/json"));
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 builder.Services.AddSingleton<AlcorRouterService>();
 
 var app = builder.Build();
@@ -136,6 +145,30 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync();
+    await db.Database.ExecuteSqlRawAsync(
+        """
+        CREATE TABLE IF NOT EXISTS route_excluded_tokens (
+            contract varchar(13) NOT NULL,
+            symbol varchar(12) NOT NULL,
+            reason text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT pk_route_excluded_tokens PRIMARY KEY (contract, symbol)
+        );
+
+        INSERT INTO route_excluded_tokens (contract, symbol, reason)
+        VALUES
+            ('chadtoken.gm', 'CHAD', 'Token charges transfer fees to the receiving exchange account.'),
+            ('chadtoken.gm', 'BBCHAD', 'Token charges transfer fees to the receiving exchange account.'),
+            ('waxpepetoken', 'KEK', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'BUZZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'LADYZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'CATERZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'DRAGONZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'HOPPERZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('buzzingarden', 'BUTTERZ', 'Token charges transfer fees to the receiving exchange account.'),
+            ('token.wienr', 'WIENR', 'Token charges transfer fees to the receiving exchange account.')
+        ON CONFLICT (contract, symbol) DO NOTHING;
+        """);
 }
 
 app.UseCors();

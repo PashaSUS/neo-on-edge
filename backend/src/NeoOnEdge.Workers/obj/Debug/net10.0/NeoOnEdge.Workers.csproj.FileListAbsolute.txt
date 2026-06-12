@@ -13,3 +13,4 @@ C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\ob
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Debug\net10.0\refint\NeoOnEdge.Workers.dll
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Debug\net10.0\NeoOnEdge.Workers.pdb
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Debug\net10.0\ref\NeoOnEdge.Workers.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Workers\obj\Debug\net10.0\NeoOnEdge.Workers.sourcelink.json

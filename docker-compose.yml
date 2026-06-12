@@ -47,6 +47,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      arbitrage-executor:
+        condition: service_started
       seq:
         condition: service_started
     environment:
@@ -85,12 +87,33 @@ services:
       App__ArbitrageAlertCooldownMinutes: "${ARBITRAGE_ALERT_COOLDOWN_MINUTES:-30}"
       App__ArbitrageNoOpportunityHeartbeatMinutes: "${ARBITRAGE_NO_OPPORTUNITY_HEARTBEAT_MINUTES:-60}"
       App__ArbitrageRequestDelayMilliseconds: "${ARBITRAGE_REQUEST_DELAY_MILLISECONDS:-100}"
+      App__ArbitrageExecutionEnabled: "${ARBITRAGE_EXECUTION_ENABLED:-false}"
+      App__ArbitrageAccount:           "${ARBITRAGE_ACCOUNT:-}"
+      App__ArbitrageExecutorUrl:       "http://arbitrage-executor:8787"
+      App__ArbitrageExecutorSecret:    "${ARBITRAGE_EXECUTOR_SECRET:-}"
+      App__ArbitrageMaxExecutionWax:   "${ARBITRAGE_MAX_EXECUTION_WAX:-5}"
+      App__ArbitrageExecutionCooldownMinutes: "${ARBITRAGE_EXECUTION_COOLDOWN_MINUTES:-30}"
+      App__ArbitrageBalanceWaitSeconds: "${ARBITRAGE_BALANCE_WAIT_SECONDS:-30}"
       App__SeqEnabled:               "${SEQ_ENABLED:-false}"
       App__SeqUrl:                   "${SEQ_URL:-}"
       App__SeqApiKey:                "${SEQ_API_KEY:-}"
       ASPNETCORE_URLS:               "http://+:5000"
     ports:
       - "${API_HOST_PORT:-15174}:5000"
+
+  arbitrage-executor:
+    build:
+      context: .
+      dockerfile: backend/src/NeoOnEdge.ArbitrageExecutor/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8787"
+      WAX_RPC_ENDPOINT: "${WAX_RPC_ENDPOINT:-https://wax.greymass.com}"
+      ARBITRAGE_ACCOUNT: "${ARBITRAGE_ACCOUNT:-}"
+      ARBITRAGE_PERMISSION: "${ARBITRAGE_PERMISSION:-active}"
+      ARBITRAGE_PRIVATE_KEY: "${ARBITRAGE_PRIVATE_KEY:-}"
+      ARBITRAGE_EXECUTOR_SECRET: "${ARBITRAGE_EXECUTOR_SECRET:-}"
+      ARBITRAGE_ALLOWED_RECIPIENTS: "${CONTRACT_ACCOUNT:-swap.neo},swap.alcor"
 
   frontend:
     build:

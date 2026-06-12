@@ -10,3 +10,4 @@ C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Core\obj\D
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Core\obj\Debug\net10.0\refint\NeoOnEdge.Core.dll
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Core\obj\Debug\net10.0\NeoOnEdge.Core.pdb
 C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Core\obj\Debug\net10.0\ref\NeoOnEdge.Core.dll
+C:\Users\pasag\Desktop\SUS Projects\neo-on-edge\backend\src\NeoOnEdge.Core\obj\Debug\net10.0\NeoOnEdge.Core.sourcelink.json

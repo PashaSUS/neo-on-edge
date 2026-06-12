@@ -17,6 +17,7 @@ public class AppDbContext : DbContext
     public DbSet<LimitOrderClose> LimitOrderCloses { get; set; } = default!;
     public DbSet<ListingEvent>   ListingEvents   { get; set; } = default!;
     public DbSet<KlineBar>       KlineBars       { get; set; } = default!;
+    public DbSet<RouteExcludedToken> RouteExcludedTokens { get; set; } = default!;
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -76,6 +77,16 @@ public class AppDbContext : DbContext
             e.ToTable("klines");
             e.HasKey(x => new { x.Src, x.PairId, x.Duration, x.BucketTs });
             e.HasIndex(x => new { x.Src, x.PairId, x.Duration, x.BucketTs });
+        });
+
+        model.Entity<RouteExcludedToken>(e =>
+        {
+            e.ToTable("route_excluded_tokens");
+            e.HasKey(x => new { x.Contract, x.Symbol });
+            e.Property(x => x.Contract).HasColumnName("contract").HasMaxLength(13);
+            e.Property(x => x.Symbol).HasColumnName("symbol").HasMaxLength(12);
+            e.Property(x => x.Reason).HasColumnName("reason");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
         });
     }
 }

@@ -6,7 +6,11 @@ using NeoOnEdge.Core.Data;
 
 namespace NeoOnEdge.Api.Services;
 
-public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> settings, ILogger<NeoRouteQuoteService> log)
+public sealed class NeoRouteQuoteService(
+    AppDbContext db,
+    AlcorRouterService alcorRouter,
+    IOptions<AppSettings> settings,
+    ILogger<NeoRouteQuoteService> log)
 {
     // Runtime-configurable caps are provided via `settings.Value` in AppSettings
     private const int MaxSplitLegs = 4;
@@ -76,7 +80,20 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
             int neoFeeBps = Math.Clamp(settings.Value.NeoRouteFeeBps, 0, 100);
             int boundedMaxHops = Math.Clamp(maxHops, 1, Math.Max(1, settings.Value.NeoRouteMaxHops));
             decimal amountDecimals = amount / Pow10(inputPrecision);
-            var search = await FindCandidatePathsAsync(codeIn, codeOut, amountDecimals, neoFeeBps, boundedMaxHops, 1, input, output, ct);
+            var search = await FindCandidatePathsAsync(
+                codeIn,
+                codeOut,
+                amount,
+                inputPrecision,
+                amountDecimals,
+                neoFeeBps,
+                boundedMaxHops,
+                1,
+                input,
+                output,
+                slippage,
+                contractAccount,
+                ct);
             var bestPath = search.Paths.FirstOrDefault();
 
             if (bestPath is null)
@@ -127,7 +144,20 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
             int neoFeeBps = Math.Clamp(settings.Value.NeoRouteFeeBps, 0, 100);
             int boundedMaxHops = Math.Clamp(maxHops, 1, Math.Max(1, settings.Value.NeoRouteMaxHops));
             decimal amountDecimals = amount / Pow10(inputPrecision);
-            var search = await FindCandidatePathsAsync(codeIn, codeOut, amountDecimals, neoFeeBps, boundedMaxHops, MaxSplitCandidatePaths, input, output, ct);
+            var search = await FindCandidatePathsAsync(
+                codeIn,
+                codeOut,
+                amount,
+                inputPrecision,
+                amountDecimals,
+                neoFeeBps,
+                boundedMaxHops,
+                MaxSplitCandidatePaths,
+                input,
+                output,
+                slippage,
+                contractAccount,
+                ct);
             var candidates = search.Paths
                 .GroupBy(PathKey, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
@@ -262,26 +292,60 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
     private async Task<PathSearchResult> FindCandidatePathsAsync(
         string codeIn,
         string codeOut,
+        long rawAmount,
+        int inputPrecision,
         decimal amountDecimals,
         int neoFeeBps,
         int boundedMaxHops,
         int limit,
         string input,
         string output,
+        double slippage,
+        string contractAccount,
         CancellationToken ct)
     {
-        var latest = await GetLatestPoolsAsync(ct);
-        if (latest.Count == 0)
+        var excludedRows = await db.RouteExcludedTokens.AsNoTracking()
+            .Select(x => new { x.Contract, x.Symbol })
+            .ToListAsync(ct);
+        var excludedTokenKeys = excludedRows
+            .Select(x => TokenKey(x.Contract, x.Symbol))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var excludedSymbols = excludedRows
+            .Select(x => x.Symbol)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (excludedTokenKeys.Contains(TokenKey(ParseContract(input), codeIn)) ||
+            excludedTokenKeys.Contains(TokenKey(ParseContract(output), codeOut)))
+            return new PathSearchResult(Array.Empty<PoolPath>(), "This token is disabled for routing because it charges the exchange account transfer fees.");
+
+        var liveAlcorPath = await GetLiveAlcorPathAsync(
+            input,
+            output,
+            rawAmount,
+            inputPrecision,
+            neoFeeBps,
+            boundedMaxHops,
+            slippage,
+            contractAccount,
+            excludedTokenKeys,
+            ct);
+
+        var latest = (await GetLatestPoolsAsync(ct))
+            .Where(pool => !excludedSymbols.Contains(pool.CodeA) && !excludedSymbols.Contains(pool.CodeB))
+            .ToArray();
+        if (latest.Length == 0 && liveAlcorPath is null)
             return new PathSearchResult(Array.Empty<PoolPath>(), "No recent NeoOnEdge pool snapshots were indexed.");
 
         var adj = BuildAdjacency(latest);
-        if (!adj.ContainsKey(codeIn))
+        if (!adj.ContainsKey(codeIn) && liveAlcorPath is null)
             return new PathSearchResult(Array.Empty<PoolPath>(), $"No indexed NeoOnEdge entry pool for {codeIn}.");
 
-        if (!adj.ContainsKey(codeOut))
+        if (!adj.ContainsKey(codeOut) && liveAlcorPath is null)
             return new PathSearchResult(Array.Empty<PoolPath>(), $"No indexed NeoOnEdge exit pool for {codeOut}.");
 
         var candidates = new List<PoolPath>();
+        if (liveAlcorPath is not null)
+            candidates.Add(liveAlcorPath);
         int visitedStates = 0;
         int reachedOutputPaths = 0;
         bool capped = false;
@@ -375,6 +439,78 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
                 : $"No NeoOnEdge path found within {boundedMaxHops} hop{(boundedMaxHops == 1 ? "" : "s")}.";
 
         return new PathSearchResult(paths, reason);
+    }
+
+    private async Task<PoolPath?> GetLiveAlcorPathAsync(
+        string input,
+        string output,
+        long rawAmount,
+        int inputPrecision,
+        int neoFeeBps,
+        int maxHops,
+        double slippage,
+        string receiver,
+        IReadOnlySet<string> excludedTokenKeys,
+        CancellationToken ct)
+    {
+        var route = await alcorRouter.GetRouteAsync(
+            input,
+            output,
+            rawAmount,
+            inputPrecision,
+            receiver,
+            slippage,
+            maxHops,
+            ct);
+
+        if (route is null ||
+            route.Route.Length == 0 ||
+            route.Route.Length > maxHops ||
+            route.Swaps.Count != 1 ||
+            route.Swaps[0].Percent != 100 ||
+            !route.Swaps[0].Route.SequenceEqual(route.Route))
+            return null;
+
+        var pools = new List<PoolInfo>(route.Route.Length);
+        var currentTokenId = input;
+
+        foreach (var poolId in route.Route)
+        {
+            if (!route.Pools.TryGetValue(poolId.ToString(), out var pool))
+                return null;
+
+            AlcorTokenId nextToken;
+            if (pool.TokenA.Id.Equals(currentTokenId, StringComparison.OrdinalIgnoreCase))
+                nextToken = pool.TokenB;
+            else if (pool.TokenB.Id.Equals(currentTokenId, StringComparison.OrdinalIgnoreCase))
+                nextToken = pool.TokenA;
+            else
+                return null;
+
+            if (IsExcludedAlcorToken(pool.TokenA, excludedTokenKeys) ||
+                IsExcludedAlcorToken(pool.TokenB, excludedTokenKeys))
+                return null;
+
+            pools.Add(new PoolInfo(
+                Src: "a2",
+                PairId: poolId.ToString(),
+                CodeA: pool.TokenA.Symbol.ToUpperInvariant(),
+                CodeB: pool.TokenB.Symbol.ToUpperInvariant(),
+                ReserveA: 0,
+                ReserveB: 0,
+                TokenIdA: pool.TokenA.Id,
+                TokenIdB: pool.TokenB.Id));
+            currentTokenId = nextToken.Id;
+        }
+
+        if (!currentTokenId.Equals(output, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var gross = ParseRouteAmount(route.Output);
+        if (gross <= 0)
+            return null;
+
+        return new PoolPath(pools.ToArray(), gross, ApplyProtocolFee(gross, neoFeeBps));
     }
 
     private Dictionary<string, List<PoolInfo>> BuildAdjacency(IReadOnlyList<PoolInfo> latest)
@@ -706,6 +842,31 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
         return dash > 0 ? alcorId[(dash + 1)..] : "eosio.token";
     }
 
+    private static decimal ParseRouteAmount(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return 0;
+
+        var amount = value.Trim();
+        int space = amount.IndexOf(' ');
+        if (space > 0)
+            amount = amount[..space];
+
+        return decimal.TryParse(
+            amount,
+            System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed)
+            ? parsed
+            : 0;
+    }
+
+    private static bool IsExcludedAlcorToken(AlcorTokenId token, IReadOnlySet<string> excludedTokenKeys)
+        => excludedTokenKeys.Contains(TokenKey(ParseContract(token.Id), token.Symbol));
+
+    private static string TokenKey(string contract, string symbol)
+        => $"{contract.Trim().ToLowerInvariant()}:{symbol.Trim().ToUpperInvariant()}";
+
     private static decimal Pow10(int precision)
     {
         precision = Math.Clamp(precision, 0, 18);
@@ -933,7 +1094,9 @@ public sealed class NeoRouteQuoteService(AppDbContext db, IOptions<AppSettings> 
         decimal? RateBtoA = null,
         decimal MaxInputA = 0,
         decimal MaxInputB = 0,
-        decimal LiquidityScore = 0);
+        decimal LiquidityScore = 0,
+        string? TokenIdA = null,
+        string? TokenIdB = null);
 
     private sealed record PathSearchResult(IReadOnlyList<PoolPath> Paths, string? Reason);
 
