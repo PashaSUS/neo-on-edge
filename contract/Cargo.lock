@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "eosio-contract"
-version = "1.0.0"
+version = "2.3.0"
 dependencies = [
  "eosio-core",
  "eosio-macros",
@@ -12,11 +12,11 @@ dependencies = [
 
 [[package]]
 name = "eosio-core"
-version = "1.0.0"
+version = "2.3.0"
 
 [[package]]
 name = "eosio-macros"
-version = "1.0.0"
+version = "2.3.0"
 dependencies = [
  "proc-macro2",
  "quote",

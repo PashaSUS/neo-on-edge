@@ -162,3 +162,4 @@ out
 /contract/target
 /backend/src/NeoOnEdge.Api/bin
 /backend/src/NeoOnEdge.Api/obj
+/contract/target/wasm32v1-none

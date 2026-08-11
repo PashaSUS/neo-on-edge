@@ -9,9 +9,9 @@ description = "NeoOnEdge — WAX DEX aggregator / multi-hop swap router (Rust)"
 crate-type = ["cdylib"]
 
 [dependencies]
-eosio-contract = { path = "../../rust-to-wasm/rust-to-wasm/eosio-contract", version = "1.0.0" }
-eosio-core     = { path = "../../rust-to-wasm/rust-to-wasm/eosio-core", version = "1.0.0" }
-eosio-macros   = { path = "../../rust-to-wasm/rust-to-wasm/eosio-macros", version = "1.0.0" }
+eosio-contract = { path = "../../rust-to-wasm/rust-to-wasm/eosio-contract", version = "=2.3.0" }
+eosio-core     = { path = "../../rust-to-wasm/rust-to-wasm/eosio-core", version = "=2.3.0" }
+eosio-macros   = { path = "../../rust-to-wasm/rust-to-wasm/eosio-macros", version = "=2.3.0" }
 
 [profile.release]
 opt-level     = "z"

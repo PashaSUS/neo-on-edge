@@ -24,10 +24,11 @@ neo-on-edge/
 DEX sources supported: Alcor v2 (`a2`), Alcor DEX orderbook (`ad`), Defibox (`d`), Taco (`t`), Adex (`a`), NeftyBlocks (`n`), WaxFusion (`wf`).
 
 ```
-# Build WASM + ABI independently from the Docker deployment
-cd contract
-wax build neoedge --output ..\build-output\contract
+# Build WASM + ABI with the required Rust-to-WASM 2.3.0 toolchain
+.\scripts\build-contract.ps1
 ```
+
+The build script verifies the sibling `rust-to-wasm` workspace is version `2.3.0` and runs that exact CLI source instead of relying on a potentially older globally installed `wax` command.
 
 Contract deployment is intentionally separate from `deploy.bat`, which only configures and deploys the Docker stack.
 
