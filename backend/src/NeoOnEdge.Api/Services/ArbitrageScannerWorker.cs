@@ -15,7 +15,8 @@ public sealed class ArbitrageScannerWorker(
     IOptions<AppSettings> settings,
     IConnectionMultiplexer redis,
     IHttpClientFactory httpFactory,
-    ArbitrageExecutionService execution) : BackgroundService
+    ArbitrageExecutionService execution,
+    ArbitrageScannerState state) : BackgroundService
 {
     private const int WaxPrecision = 8;
     private const int MaxArbitrageHops = 3;
@@ -33,28 +34,46 @@ public sealed class ArbitrageScannerWorker(
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        if (!settings.Value.ArbitrageScannerEnabled)
+        var cfg = settings.Value;
+        var intervalSeconds = Math.Clamp(cfg.ArbitrageScanIntervalSeconds, 60, 86_400);
+        state.MarkConfigured(
+            cfg.ArbitrageScannerEnabled,
+            !string.IsNullOrWhiteSpace(cfg.ArbitrageDiscordWebhookUrl),
+            cfg.ArbitrageExecutionEnabled,
+            execution.IsConfigured,
+            intervalSeconds);
+
+        if (!cfg.ArbitrageScannerEnabled)
         {
             log.LogInformation("Arbitrage scanner is disabled");
+            state.MarkSkipped("Scanner is disabled by configuration.");
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Value.ArbitrageDiscordWebhookUrl) &&
-            !settings.Value.ArbitrageExecutionEnabled)
+        if (string.IsNullOrWhiteSpace(cfg.ArbitrageDiscordWebhookUrl) &&
+            !cfg.ArbitrageExecutionEnabled)
         {
-            log.LogWarning("Arbitrage scanner is enabled but neither Discord alerts nor automatic execution are configured");
-            return;
+            log.LogWarning("Arbitrage scanner is enabled without Discord alerts or automatic execution; scans will still run and only write logs/status");
         }
 
-        if (settings.Value.ArbitrageExecutionEnabled && !execution.IsConfigured)
+        if (cfg.ArbitrageExecutionEnabled && !execution.IsConfigured)
         {
             log.LogError("Automatic arbitrage execution is enabled but the account or executor secret is missing");
+            state.MarkSkipped("Automatic execution is enabled but the account or executor secret is missing.");
             return;
         }
+
+        log.LogInformation(
+            "Arbitrage scanner starting: intervalSeconds={IntervalSeconds}, maxInputWax={MaxInputWax}, maxTokensPerScan={MaxTokensPerScan}, discordConfigured={DiscordConfigured}, executionEnabled={ExecutionEnabled}",
+            intervalSeconds,
+            cfg.ArbitrageMaxInputWax,
+            cfg.ArbitrageMaxTokensPerScan,
+            !string.IsNullOrWhiteSpace(cfg.ArbitrageDiscordWebhookUrl),
+            cfg.ArbitrageExecutionEnabled);
 
         await RunScanSafely(ct);
 
-        var interval = TimeSpan.FromSeconds(Math.Clamp(settings.Value.ArbitrageScanIntervalSeconds, 60, 86_400));
+        var interval = TimeSpan.FromSeconds(intervalSeconds);
         using var timer = new PeriodicTimer(interval);
 
         while (await timer.WaitForNextTickAsync(ct))
@@ -72,6 +91,7 @@ public sealed class ArbitrageScannerWorker(
         }
         catch (Exception ex)
         {
+            state.MarkScanFailed(ex);
             log.LogError(ex, "Arbitrage scan failed");
         }
     }
@@ -83,8 +103,17 @@ public sealed class ArbitrageScannerWorker(
         if (probeAmounts.Count == 0)
         {
             log.LogWarning("Arbitrage scanner has no WAX probe amounts to evaluate");
+            state.MarkSkipped("Scanner has no WAX probe amounts to evaluate.");
             return;
         }
+
+        state.MarkScanStarted();
+        log.LogInformation(
+            "Arbitrage scan started: probeAmounts={ProbeAmounts}, maxTokensPerScan={MaxTokensPerScan}, minProfitWax={MinProfitWax}, minProfitPercent={MinProfitPercent}",
+            string.Join(',', probeAmounts.Select(FormatWax)),
+            cfg.ArbitrageMaxTokensPerScan,
+            cfg.ArbitrageMinProfitWax,
+            cfg.ArbitrageMinProfitPercent);
 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -113,11 +142,17 @@ public sealed class ArbitrageScannerWorker(
         if (cfg.ArbitrageMaxTokensPerScan > 0)
             candidates = candidates.Take(cfg.ArbitrageMaxTokensPerScan).ToArray();
 
+        log.LogInformation(
+            "Arbitrage scan loaded {CandidateCount} candidate tokens from {TokenCount} catalog tokens",
+            candidates.Length,
+            tokens.Count);
+
         var opportunities = new List<ArbitrageOpportunity>();
         int routeLookups = 0;
         int rejectedUnsafeNeoRoutes = 0;
         int rejectedSuspiciousRoundTrips = 0;
         int neoSuppressedForContractSafety = 0;
+        var routeDiagnostics = new ArbitrageRouteDiagnostics();
         int delayMs = Math.Clamp(cfg.ArbitrageRequestDelayMilliseconds, 0, 5_000);
 
         foreach (var token in candidates)
@@ -142,7 +177,8 @@ public sealed class ArbitrageScannerWorker(
                     token.Precision,
                     cfg,
                     includeNeoRoutes,
-                    ct);
+                    ct,
+                    routeDiagnostics);
 
                 routeLookups += buyCandidates.LookupCount;
 
@@ -158,7 +194,8 @@ public sealed class ArbitrageScannerWorker(
                         WaxPrecision,
                         cfg,
                         includeNeoRoutes,
-                        ct);
+                        ct,
+                        routeDiagnostics);
 
                     routeLookups += sellCandidates.LookupCount;
 
@@ -214,11 +251,20 @@ public sealed class ArbitrageScannerWorker(
             .ThenByDescending(x => x.ProfitPercent)
             .Take(Math.Clamp(cfg.ArbitrageAlertTopCount, 1, 25))
             .ToArray();
+        LogRouteDiagnostics(routeDiagnostics);
 
         if (top.Length > 0)
         {
-            await PostOpportunities(top, candidates.Length, routeLookups, ct);
-            await TryExecuteTopOpportunityAsync(top, wax, alcorRouter, neoRouter, cfg, ct);
+            var executionResult = await TryExecuteTopOpportunityAsync(top, wax, alcorRouter, neoRouter, cfg, ct);
+            await PostOpportunities(top, candidates.Length, routeLookups, executionResult, ct);
+            state.MarkScanCompleted(
+                candidates.Length,
+                routeLookups,
+                opportunities.Count,
+                top.Length,
+                rejectedUnsafeNeoRoutes,
+                rejectedSuspiciousRoundTrips,
+                neoSuppressedForContractSafety);
             log.LogInformation(
                 "Arbitrage scan found {Count} dry-run opportunities across {Candidates} tokens (alerted={Alerted}, rejectedUnsafeNeoRoutes={RejectedUnsafeNeoRoutes}, rejectedSuspiciousRoundTrips={RejectedSuspiciousRoundTrips}, neoSuppressedForContractSafety={NeoSuppressedForContractSafety})",
                 opportunities.Count,
@@ -231,6 +277,14 @@ public sealed class ArbitrageScannerWorker(
         }
 
         await PostNoOpportunityHeartbeat(candidates.Length, routeLookups, ct);
+        state.MarkScanCompleted(
+            candidates.Length,
+            routeLookups,
+            opportunities.Count,
+            0,
+            rejectedUnsafeNeoRoutes,
+            rejectedSuspiciousRoundTrips,
+            neoSuppressedForContractSafety);
         log.LogInformation(
             "Arbitrage scan found no alert-safe opportunities across {Candidates} tokens (rawOpportunities={RawOpportunities}, rejectedUnsafeNeoRoutes={RejectedUnsafeNeoRoutes}, rejectedSuspiciousRoundTrips={RejectedSuspiciousRoundTrips}, neoSuppressedForContractSafety={NeoSuppressedForContractSafety})",
             candidates.Length,
@@ -250,7 +304,11 @@ public sealed class ArbitrageScannerWorker(
         int outputPrecision,
         AppSettings cfg,
         bool includeNeoRoutes,
-        CancellationToken ct)
+        CancellationToken ct,
+        ArbitrageRouteDiagnostics? routeDiagnostics = null,
+        bool useAlcorCache = true,
+        bool includeSplitRoutes = true,
+        double? slippageOverride = null)
     {
         var receiver = cfg.ArbitrageExecutionEnabled && !string.IsNullOrWhiteSpace(cfg.ArbitrageAccount)
             ? cfg.ArbitrageAccount
@@ -258,66 +316,109 @@ public sealed class ArbitrageScannerWorker(
         var quotes = new List<RouteQuote>(2);
         var maxHops = EffectiveArbitrageMaxHops(cfg);
         var lookupCount = 0;
+        var slippage = slippageOverride ?? cfg.ArbitrageSlippage;
 
-        var alcor = await alcorRouter.GetRouteAsync(
-            input,
-            output,
-            rawAmount,
-            inputPrecision,
-            receiver,
-            cfg.ArbitrageSlippage,
-            maxHops,
-            ct);
+        routeDiagnostics?.RecordAttempt("Alcor");
+        var alcor = useAlcorCache
+            ? await alcorRouter.GetRouteAsync(
+                input,
+                output,
+                rawAmount,
+                inputPrecision,
+                receiver,
+                slippage,
+                maxHops,
+                ct)
+            : await alcorRouter.GetFreshRouteAsync(
+                input,
+                output,
+                rawAmount,
+                inputPrecision,
+                receiver,
+                slippage,
+                maxHops,
+                ct);
         lookupCount++;
 
         if (alcor is not null)
         {
+            routeDiagnostics?.RecordSuccess("Alcor");
             AddRouteQuote(
                 quotes,
                 "Alcor",
+                rawAmount,
                 alcor.Output,
                 outputPrecision,
                 alcor.Memo,
                 "swap.alcor",
                 Math.Max(1, alcor.Route.Length),
                 alcor.Route.Length > 0 ? string.Join(" -> ", alcor.Route.Select(x => $"pool {x}")) : "router",
-                [new RouteLeg("Alcor", ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(alcor.Output), Math.Max(1, alcor.Route.Length), alcor.Route.Length > 0 ? string.Join(" -> ", alcor.Route.Select(x => $"pool {x}")) : "router")]);
+                [new RouteLeg("Alcor", rawAmount, ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(alcor.Output), Math.Max(1, alcor.Route.Length), alcor.Route.Length > 0 ? string.Join(" -> ", alcor.Route.Select(x => $"pool {x}")) : "router", "swap.alcor", alcor.Memo)]);
+        }
+        else
+        {
+            routeDiagnostics?.RecordFailure(
+                "Alcor",
+                "Alcor router returned no route.",
+                input,
+                output,
+                rawAmount,
+                inputPrecision,
+                useAlcorCache,
+                "direct");
         }
 
         if (includeNeoRoutes)
         {
-            var neo = await neoRouter.GetRouteAsync(
+            routeDiagnostics?.RecordAttempt("NeoOnEdge");
+            var neoQuote = await neoRouter.GetRouteQuoteAsync(
                     input,
                     output,
                     rawAmount,
                     receiver,
                     inputPrecision,
                     outputPrecision,
-                    cfg.ArbitrageSlippage,
+                    slippage,
                     maxHops,
                     cfg.ContractAccount,
-                    ct);
+                    ct,
+                    readAlcorCache: useAlcorCache);
+            var neo = neoQuote.Route;
             lookupCount++;
 
             if (neo is not null)
             {
+                routeDiagnostics?.RecordSuccess("NeoOnEdge");
                 var neoSteps = neo.Steps.Count > 0
                     ? string.Join(" -> ", neo.Steps.Select(step => $"{step.FromSymbol}->{step.ToSymbol} via {SourceLabel(step.Src)} pool {step.PairId}"))
                     : $"{SourceLabel(neo.Src)} pool {neo.PairId}";
                 AddRouteQuote(
                     quotes,
                     "NeoOnEdge",
+                    rawAmount,
                     neo.Output,
                     outputPrecision,
                     neo.Memo,
                     cfg.ContractAccount,
                     Math.Max(1, neo.Steps.Count),
                     neoSteps,
-                    [new RouteLeg("NeoOnEdge", ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(neo.Output), Math.Max(1, neo.Steps.Count), neoSteps)]);
+                    [new RouteLeg("NeoOnEdge", rawAmount, ToTokenAmount(rawAmount, inputPrecision), ParseRouteAmount(neo.Output), Math.Max(1, neo.Steps.Count), neoSteps, cfg.ContractAccount, neo.Memo)]);
+            }
+            else
+            {
+                routeDiagnostics?.RecordFailure(
+                    "NeoOnEdge",
+                    neoQuote.Reason ?? "NeoOnEdge route quote returned no route.",
+                    input,
+                    output,
+                    rawAmount,
+                    inputPrecision,
+                    useAlcorCache,
+                    "direct");
             }
         }
 
-        if (includeNeoRoutes && quotes.Count >= 2)
+        if (includeSplitRoutes && includeNeoRoutes && quotes.Count >= 2)
         {
             var split = await GetBestSplitQuoteAsync(
                 alcorRouter,
@@ -330,7 +431,8 @@ public sealed class ArbitrageScannerWorker(
                 cfg,
                 maxHops,
                 receiver,
-                ct);
+                ct,
+                routeDiagnostics);
 
             lookupCount += split.LookupCount;
             var bestDirectOutput = quotes.Max(x => x.OutputAmount);
@@ -354,7 +456,8 @@ public sealed class ArbitrageScannerWorker(
         AppSettings cfg,
         int maxHops,
         string receiver,
-        CancellationToken ct)
+        CancellationToken ct,
+        ArbitrageRouteDiagnostics? routeDiagnostics = null)
     {
         int[] alcorPercentages = [25, 50, 75];
         RouteQuote? best = null;
@@ -367,6 +470,7 @@ public sealed class ArbitrageScannerWorker(
             if (alcorRaw <= 0 || neoRaw <= 0)
                 continue;
 
+            routeDiagnostics?.RecordAttempt("SplitAlcorLeg");
             var alcor = await alcorRouter.GetRouteAsync(
                 input,
                 output,
@@ -378,7 +482,8 @@ public sealed class ArbitrageScannerWorker(
                 ct);
             lookupCount++;
 
-            var neo = await neoRouter.GetRouteAsync(
+            routeDiagnostics?.RecordAttempt("SplitNeoLeg");
+            var neoQuote = await neoRouter.GetRouteQuoteAsync(
                 input,
                 output,
                 neoRaw,
@@ -389,7 +494,42 @@ public sealed class ArbitrageScannerWorker(
                 maxHops,
                 cfg.ContractAccount,
                 ct);
+            var neo = neoQuote.Route;
             lookupCount++;
+
+            if (alcor is null)
+            {
+                routeDiagnostics?.RecordFailure(
+                    "SplitAlcorLeg",
+                    "Alcor router returned no split-leg route.",
+                    input,
+                    output,
+                    alcorRaw,
+                    inputPrecision,
+                    readAlcorCache: true,
+                    "split");
+            }
+            else
+            {
+                routeDiagnostics?.RecordSuccess("SplitAlcorLeg");
+            }
+
+            if (neo is null)
+            {
+                routeDiagnostics?.RecordFailure(
+                    "SplitNeoLeg",
+                    neoQuote.Reason ?? "NeoOnEdge split leg returned no route.",
+                    input,
+                    output,
+                    neoRaw,
+                    inputPrecision,
+                    readAlcorCache: true,
+                    "split");
+            }
+            else
+            {
+                routeDiagnostics?.RecordSuccess("SplitNeoLeg");
+            }
 
             if (alcor is null || neo is null)
                 continue;
@@ -408,8 +548,8 @@ public sealed class ArbitrageScannerWorker(
 
             var legs = new[]
             {
-                new RouteLeg("Alcor", ToTokenAmount(alcorRaw, inputPrecision), alcorOutput, Math.Max(1, alcor.Route.Length), alcorSteps),
-                new RouteLeg("NeoOnEdge", ToTokenAmount(neoRaw, inputPrecision), neoOutput, Math.Max(1, neo.Steps.Count), neoSteps),
+                new RouteLeg("Alcor", alcorRaw, ToTokenAmount(alcorRaw, inputPrecision), alcorOutput, Math.Max(1, alcor.Route.Length), alcorSteps, "swap.alcor", alcor.Memo),
+                new RouteLeg("NeoOnEdge", neoRaw, ToTokenAmount(neoRaw, inputPrecision), neoOutput, Math.Max(1, neo.Steps.Count), neoSteps, cfg.ContractAccount, neo.Memo),
             };
 
             var totalOutput = alcorOutput + neoOutput;
@@ -438,6 +578,7 @@ public sealed class ArbitrageScannerWorker(
     private static void AddRouteQuote(
         ICollection<RouteQuote> quotes,
         string source,
+        long inputRaw,
         string output,
         int outputPrecision,
         string memo,
@@ -451,10 +592,91 @@ public sealed class ArbitrageScannerWorker(
         if (outputRaw is null || outputAmount <= 0)
             return;
 
-        quotes.Add(new RouteQuote(source, outputAmount, outputRaw.Value, output, memo, contract, hops, steps, legs));
+        var executableLegs = legs
+            .Select(leg => leg with
+            {
+                InputRaw = leg.InputRaw > 0 ? leg.InputRaw : inputRaw,
+                Contract = string.IsNullOrWhiteSpace(leg.Contract) ? contract : leg.Contract,
+                Memo = string.IsNullOrWhiteSpace(leg.Memo) ? memo : leg.Memo
+            })
+            .ToArray();
+
+        quotes.Add(new RouteQuote(source, outputAmount, outputRaw.Value, output, memo, contract, hops, steps, executableLegs));
     }
 
-    private async Task TryExecuteTopOpportunityAsync(
+    private async Task<ExecutionPlan?> GetFreshExecutionPlanAsync(
+        ArbitrageOpportunity opportunity,
+        TokenCatalogItem wax,
+        AlcorRouterService alcorRouter,
+        NeoRouteQuoteService neoRouter,
+        AppSettings cfg,
+        CancellationToken ct)
+    {
+        var inputRaw = ToRawAmount(opportunity.InputWax, WaxPrecision);
+        if (inputRaw is null)
+            return null;
+
+        var executionSlippage = Math.Clamp(cfg.ArbitrageExecutionSlippage, 0.1, 25.0);
+        var includeNeoRoutes = IsTokenSafeForNeoArbitrage(opportunity.Token);
+        var buyCandidates = await GetQuoteCandidatesAsync(
+            alcorRouter,
+            neoRouter,
+            wax.Id,
+            opportunity.Token.Id,
+            inputRaw.Value,
+            WaxPrecision,
+            opportunity.Token.Precision,
+            cfg,
+            includeNeoRoutes,
+            ct,
+            useAlcorCache: false,
+            includeSplitRoutes: true,
+            slippageOverride: executionSlippage);
+
+        ExecutionPlan? best = null;
+        foreach (var buyRoute in buyCandidates.Routes.Where(IsAutoExecutableRoute))
+        {
+            var sellCandidates = await GetQuoteCandidatesAsync(
+                alcorRouter,
+                neoRouter,
+                opportunity.Token.Id,
+                wax.Id,
+                buyRoute.OutputRaw,
+                opportunity.Token.Precision,
+                WaxPrecision,
+                cfg,
+                includeNeoRoutes,
+                ct,
+                useAlcorCache: false,
+                includeSplitRoutes: true,
+                slippageOverride: executionSlippage);
+
+            var sellRoute = sellCandidates.Routes
+                .Where(IsAutoExecutableRoute)
+                .Where(route => IsSafeRouteCombination(opportunity.Token, buyRoute, route))
+                .OrderByDescending(route => route.OutputAmount)
+                .FirstOrDefault();
+            if (sellRoute is null)
+                continue;
+
+            var profitWax = sellRoute.OutputAmount - opportunity.InputWax;
+            var profitPercent = opportunity.InputWax > 0
+                ? profitWax / opportunity.InputWax * 100m
+                : 0;
+            if (profitWax < cfg.ArbitrageMinProfitWax ||
+                profitPercent < cfg.ArbitrageMinProfitPercent ||
+                profitPercent > MaxReasonableDryRunProfitPercent)
+                continue;
+
+            var candidate = new ExecutionPlan(buyRoute, sellRoute, executionSlippage);
+            if (best is null || candidate.SellRoute.OutputAmount > best.SellRoute.OutputAmount)
+                best = candidate;
+        }
+
+        return best;
+    }
+
+    private async Task<ExecutionAttemptResult> TryExecuteTopOpportunityAsync(
         IReadOnlyList<ArbitrageOpportunity> opportunities,
         TokenCatalogItem wax,
         AlcorRouterService alcorRouter,
@@ -463,31 +685,58 @@ public sealed class ArbitrageScannerWorker(
         CancellationToken ct)
     {
         if (!cfg.ArbitrageExecutionEnabled || !execution.IsConfigured)
-            return;
+        {
+            log.LogInformation("Automatic arbitrage execution is disabled; scanner will only publish quote results");
+            return new ExecutionAttemptResult(false, false, "Automatic execution is disabled for this scanner.");
+        }
 
         var opportunity = opportunities.FirstOrDefault(x =>
             x.InputWax <= cfg.ArbitrageMaxExecutionWax &&
-            IsDirectExecutableRoute(x.BuyRoute) &&
-            IsDirectExecutableRoute(x.SellRoute));
+            IsAutoExecutableRoute(x.BuyRoute) &&
+            IsAutoExecutableRoute(x.SellRoute));
         if (opportunity is null)
-            return;
+        {
+            log.LogInformation(
+                "Automatic arbitrage execution skipped because no opportunity met the executable-route and max-execution filters (maxExecutionWax={MaxExecutionWax})",
+                cfg.ArbitrageMaxExecutionWax);
+            return new ExecutionAttemptResult(false, false, "No opportunity met the automatic execution rules in this scan.");
+        }
 
         var cooldown = TimeSpan.FromMinutes(Math.Clamp(cfg.ArbitrageExecutionCooldownMinutes, 1, 1_440));
         var lockKey = $"arbitrage:execution:{opportunity.Token.Id}";
         if (!await _cache.StringSetAsync(lockKey, "1", cooldown, When.NotExists))
-            return;
+        {
+            log.LogInformation(
+                "Automatic arbitrage execution skipped for {Token} because the cooldown lock is active",
+                opportunity.Token.Id);
+            return new ExecutionAttemptResult(false, false, $"Execution cooldown is active for {opportunity.Token.Symbol} ({opportunity.Token.Id}).");
+        }
 
         try
         {
+            var executionPlan = await GetFreshExecutionPlanAsync(
+                opportunity,
+                wax,
+                alcorRouter,
+                neoRouter,
+                cfg,
+                ct);
+            if (executionPlan is null)
+            {
+                log.LogInformation(
+                    "Skipped stale arbitrage opportunity for {Token}; fresh execution quotes no longer met the profit threshold",
+                    opportunity.Token.Id);
+                return new ExecutionAttemptResult(true, false, $"Fresh execution quotes for {opportunity.Token.Symbol} ({opportunity.Token.Id}) no longer met the profit threshold.");
+            }
+
             var beforeTokenBalance = await execution.GetBalanceAsync(opportunity.Token, ct);
             var inputRaw = ToRawAmount(opportunity.InputWax, WaxPrecision)
                 ?? throw new InvalidOperationException("Could not convert arbitrage WAX input to a raw amount.");
 
-            var buyTransaction = await execution.TransferAsync(
+            var buyTransactions = await ExecuteRouteAsync(
                 wax,
                 inputRaw,
-                opportunity.BuyRoute.Contract,
-                opportunity.BuyRoute.Memo,
+                executionPlan.BuyRoute,
                 ct);
 
             var receivedToken = await WaitForBalanceIncreaseAsync(
@@ -497,7 +746,7 @@ public sealed class ArbitrageScannerWorker(
                 ct);
             var receivedRaw = ToRawAmount(receivedToken, opportunity.Token.Precision);
             if (receivedRaw is null)
-                throw new InvalidOperationException($"Buy transaction {buyTransaction} produced no observable {opportunity.Token.Symbol} balance increase.");
+                throw new InvalidOperationException($"Buy transactions {string.Join(", ", buyTransactions)} produced no observable {opportunity.Token.Symbol} balance increase.");
 
             var sellCandidates = await GetQuoteCandidatesAsync(
                 alcorRouter,
@@ -509,18 +758,20 @@ public sealed class ArbitrageScannerWorker(
                 WaxPrecision,
                 cfg,
                 IsTokenSafeForNeoArbitrage(opportunity.Token),
-                ct);
+                ct,
+                useAlcorCache: false,
+                includeSplitRoutes: true,
+                slippageOverride: executionPlan.Slippage);
             var sellRoute = sellCandidates.Routes
-                .Where(IsDirectExecutableRoute)
+                .Where(IsAutoExecutableRoute)
                 .OrderByDescending(x => x.OutputAmount)
                 .FirstOrDefault()
                 ?? throw new InvalidOperationException("No executable unwind route was available after the buy leg.");
 
-            var sellTransaction = await execution.TransferAsync(
+            var sellTransactions = await ExecuteRouteAsync(
                 opportunity.Token,
                 receivedRaw.Value,
-                sellRoute.Contract,
-                sellRoute.Memo,
+                sellRoute,
                 ct);
 
             log.LogWarning(
@@ -528,14 +779,18 @@ public sealed class ArbitrageScannerWorker(
                 opportunity.Token.Id,
                 opportunity.InputWax,
                 sellRoute.OutputAmount,
-                buyTransaction,
-                sellTransaction);
+                string.Join(", ", buyTransactions),
+                string.Join(", ", sellTransactions));
 
             await SendDiscordMessage(
                 $"**NeoOnEdge arbitrage executed**\n" +
                 $"{FormatWax(opportunity.InputWax)} WAX -> {opportunity.Token.Symbol} -> expected {FormatWax(sellRoute.OutputAmount)} WAX\n" +
-                $"Buy: `{buyTransaction}`\nSell: `{sellTransaction}`",
+                $"Buy: `{string.Join(", ", buyTransactions)}`\nSell: `{string.Join(", ", sellTransactions)}`",
                 ct);
+            return new ExecutionAttemptResult(
+                true,
+                true,
+                $"Automatic execution submitted for {opportunity.Token.Symbol}: buy `{string.Join(", ", buyTransactions)}`, sell `{string.Join(", ", sellTransactions)}`.");
         }
         catch (Exception ex)
         {
@@ -543,7 +798,58 @@ public sealed class ArbitrageScannerWorker(
             await SendDiscordMessage(
                 $"**NeoOnEdge automatic arbitrage failed**\nToken: {opportunity.Token.Id}\nError: {ex.Message}",
                 ct);
+            return new ExecutionAttemptResult(true, false, $"Automatic execution failed for {opportunity.Token.Symbol} ({opportunity.Token.Id}): {ex.Message}");
         }
+    }
+
+    private async Task<IReadOnlyList<string>> ExecuteRouteAsync(
+        TokenCatalogItem token,
+        long expectedInputRaw,
+        RouteQuote route,
+        CancellationToken ct)
+    {
+        if (route.Source.Equals("Split", StringComparison.OrdinalIgnoreCase))
+        {
+            var executableLegs = route.Legs
+                .Where(leg => leg.InputRaw > 0)
+                .ToArray();
+            if (executableLegs.Length == 0)
+                throw new InvalidOperationException("Split route has no executable legs.");
+
+            var totalRaw = executableLegs.Sum(leg => leg.InputRaw);
+            if (totalRaw != expectedInputRaw)
+                throw new InvalidOperationException($"Split route input mismatch. Expected {expectedInputRaw}, got {totalRaw}.");
+
+            var transactionIds = new List<string>(executableLegs.Length);
+            foreach (var leg in executableLegs)
+            {
+                if (string.IsNullOrWhiteSpace(leg.Contract) || string.IsNullOrWhiteSpace(leg.Memo))
+                    throw new InvalidOperationException($"Split route leg {leg.Source} is missing execution metadata.");
+
+                var transactionId = await execution.TransferAsync(
+                    token,
+                    leg.InputRaw,
+                    leg.Contract,
+                    leg.Memo,
+                    ct);
+                transactionIds.Add(transactionId);
+            }
+
+            return transactionIds;
+        }
+
+        if (string.IsNullOrWhiteSpace(route.Contract) || string.IsNullOrWhiteSpace(route.Memo))
+            throw new InvalidOperationException("Route is missing execution metadata.");
+
+        return
+        [
+            await execution.TransferAsync(
+                token,
+                expectedInputRaw,
+                route.Contract,
+                route.Memo,
+                ct)
+        ];
     }
 
     private async Task<decimal> WaitForBalanceIncreaseAsync(
@@ -568,6 +874,7 @@ public sealed class ArbitrageScannerWorker(
         IReadOnlyList<ArbitrageOpportunity> opportunities,
         int tokenCount,
         int routeLookups,
+        ExecutionAttemptResult executionResult,
         CancellationToken ct)
     {
         var cfg = settings.Value;
@@ -586,8 +893,10 @@ public sealed class ArbitrageScannerWorker(
 
         var lines = new List<string>
         {
-            "**NeoOnEdge dry-run arbitrage monitor**",
-            "No trade was executed. These are quote calculations only.",
+            executionResult.Attempted || executionResult.Executed
+                ? "**NeoOnEdge arbitrage monitor**"
+                : "**NeoOnEdge quote-only arbitrage monitor**",
+            executionResult.Summary,
             $"Scanned {tokenCount} tokens, {routeLookups} route quote attempts, max probe {FormatWax(cfg.ArbitrageMaxInputWax)} WAX.",
             $"Threshold: +{cfg.ArbitrageMinProfitWax.ToString("0.########", CultureInfo.InvariantCulture)} WAX and +{cfg.ArbitrageMinProfitPercent.ToString("0.###", CultureInfo.InvariantCulture)}%.",
             ""
@@ -621,8 +930,12 @@ public sealed class ArbitrageScannerWorker(
             return;
 
         string content = string.Join('\n',
-            "**NeoOnEdge dry-run arbitrage monitor**",
-            "No trade was executed. These are quote calculations only.",
+            cfg.ArbitrageExecutionEnabled && execution.IsConfigured
+                ? "**NeoOnEdge arbitrage monitor**"
+                : "**NeoOnEdge quote-only arbitrage monitor**",
+            cfg.ArbitrageExecutionEnabled && execution.IsConfigured
+                ? "Automatic execution is enabled, but no opportunity qualified in this scan."
+                : "Automatic execution is disabled. These are quote calculations only.",
             $"No opportunities above threshold in this scan. Scanned {tokenCount} tokens and made {routeLookups} route quote attempts.",
             $"Max probe: {FormatWax(cfg.ArbitrageMaxInputWax)} WAX. Next heartbeat will wait at least {heartbeatMinutes} minutes.");
 
@@ -652,6 +965,34 @@ public sealed class ArbitrageScannerWorker(
             log.LogWarning(
                 "Discord arbitrage webhook returned HTTP {StatusCode}",
                 (int)response.StatusCode);
+        }
+    }
+
+    private void LogRouteDiagnostics(ArbitrageRouteDiagnostics diagnostics)
+    {
+        if (diagnostics.TotalAttempts == 0)
+            return;
+
+        log.LogInformation(
+            "Arbitrage route diagnostics: attempts={Attempts}, successes={Successes}, failures={Failures}, attemptsBySource={AttemptsBySource}, failuresByReason={FailuresByReason}",
+            diagnostics.TotalAttempts,
+            diagnostics.TotalSuccesses,
+            diagnostics.TotalFailures,
+            diagnostics.FormatAttemptsBySource(),
+            diagnostics.FormatFailuresByReason());
+
+        foreach (var sample in diagnostics.Samples)
+        {
+            log.LogInformation(
+                "Arbitrage route rejection sample: source={Source}, phase={Phase}, input={Input}, output={Output}, inputRaw={InputRaw}, inputAmount={InputAmount}, reason={Reason}, readAlcorCache={ReadAlcorCache}",
+                sample.Source,
+                sample.Phase,
+                sample.Input,
+                sample.Output,
+                sample.InputRaw,
+                FormatTokenAmount(ToTokenAmount(sample.InputRaw, sample.InputPrecision), sample.InputPrecision),
+                sample.Reason,
+                sample.ReadAlcorCache);
         }
     }
 
@@ -767,6 +1108,19 @@ public sealed class ArbitrageScannerWorker(
            !string.IsNullOrWhiteSpace(route.Contract) &&
            !string.IsNullOrWhiteSpace(route.Memo);
 
+    private static bool IsAutoExecutableRoute(RouteQuote route)
+    {
+        if (IsDirectExecutableRoute(route))
+            return true;
+
+        return route.Source.Equals("Split", StringComparison.OrdinalIgnoreCase) &&
+               route.Legs.Count >= 2 &&
+               route.Legs.All(leg =>
+                   leg.InputRaw > 0 &&
+                   !string.IsNullOrWhiteSpace(leg.Contract) &&
+                   !string.IsNullOrWhiteSpace(leg.Memo));
+    }
+
     private static string FormatWax(decimal value)
         => value.ToString("0.########", CultureInfo.InvariantCulture);
 
@@ -798,14 +1152,96 @@ public sealed class ArbitrageScannerWorker(
 
     private sealed record RouteLeg(
         string Source,
+        long InputRaw,
         decimal InputAmount,
         decimal OutputAmount,
         int Hops,
-        string Steps);
+        string Steps,
+        string Contract,
+        string Memo);
 
     private sealed record QuoteCandidateSet(IReadOnlyList<RouteQuote> Routes, int LookupCount);
 
     private sealed record SplitQuoteResult(RouteQuote? Route, int LookupCount);
+
+    private sealed record ExecutionPlan(RouteQuote BuyRoute, RouteQuote SellRoute, double Slippage);
+
+    private sealed record ExecutionAttemptResult(bool Attempted, bool Executed, string Summary);
+
+    private sealed class ArbitrageRouteDiagnostics
+    {
+        private const int MaxSamples = 20;
+        private readonly Dictionary<string, int> attemptsBySource = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> successesBySource = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> failuresByReason = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<RouteFailureSample> samples = [];
+
+        public int TotalAttempts => attemptsBySource.Values.Sum();
+        public int TotalSuccesses => successesBySource.Values.Sum();
+        public int TotalFailures => failuresByReason.Values.Sum();
+        public IReadOnlyList<RouteFailureSample> Samples => samples;
+
+        public void RecordAttempt(string source)
+            => Increment(attemptsBySource, source);
+
+        public void RecordSuccess(string source)
+            => Increment(successesBySource, source);
+
+        public void RecordFailure(
+            string source,
+            string reason,
+            string input,
+            string output,
+            long inputRaw,
+            int inputPrecision,
+            bool readAlcorCache,
+            string phase)
+        {
+            Increment(failuresByReason, $"{source}: {reason}");
+            if (samples.Count >= MaxSamples)
+                return;
+
+            samples.Add(new RouteFailureSample(
+                source,
+                phase,
+                input,
+                output,
+                inputRaw,
+                inputPrecision,
+                readAlcorCache,
+                reason));
+        }
+
+        public string FormatAttemptsBySource()
+            => FormatCounts(attemptsBySource);
+
+        public string FormatFailuresByReason()
+            => FormatCounts(failuresByReason);
+
+        private static void Increment(Dictionary<string, int> counts, string key)
+        {
+            counts.TryGetValue(key, out var current);
+            counts[key] = current + 1;
+        }
+
+        private static string FormatCounts(IReadOnlyDictionary<string, int> counts)
+            => counts.Count == 0
+                ? "none"
+                : string.Join("; ", counts
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(x => $"{x.Key}={x.Value}"));
+    }
+
+    private sealed record RouteFailureSample(
+        string Source,
+        string Phase,
+        string Input,
+        string Output,
+        long InputRaw,
+        int InputPrecision,
+        bool ReadAlcorCache,
+        string Reason);
 
     private sealed record ArbitrageOpportunity(
         TokenCatalogItem Token,

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Net;
 using System.Net.Sockets;
 using SUS.EOS.Sharp.Models;
 
@@ -184,6 +185,11 @@ public sealed class AntelopeHttpClient : IAntelopeBlockchainClient
         return false;
     }
 
+    private static bool SupportsFailover(HttpStatusCode statusCode)
+        => statusCode is HttpStatusCode.NotFound
+            or HttpStatusCode.MethodNotAllowed
+            or HttpStatusCode.NotImplemented;
+
     private async Task<HttpResponseMessage> PostWithFailoverAsync(
         string path,
         Func<HttpContent?> contentFactory,
@@ -203,6 +209,18 @@ public sealed class AntelopeHttpClient : IAntelopeBlockchainClient
             {
                 using var content = contentFactory();
                 var response = await client.PostAsync(path, content, cancellationToken);
+
+                if (!response.IsSuccessStatusCode &&
+                    offset < _endpoints.Count - 1 &&
+                    SupportsFailover(response.StatusCode))
+                {
+                    lastError = new HttpRequestException(
+                        $"HTTP {(int)response.StatusCode} from {endpoint} for path '{path}'");
+                    response.Dispose();
+                    System.Diagnostics.Trace.WriteLine(
+                        $"[RPC] Endpoint {endpoint} returned HTTP {(int)response.StatusCode} for {path}, trying fallback");
+                    continue;
+                }
 
                 if (!useCurrentClient)
                 {

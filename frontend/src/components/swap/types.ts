@@ -5,4 +5,8 @@ export type Token = Pick<TokenInfo, 'contract' | 'symbol' | 'precision' | 'id'> 
   logoUrl?: string | null
   popularityScore?: number
   isTrusted?: boolean
+  balanceAmount?: number
+  balanceAsset?: string
+  usdValue?: number | null
+  isOwned?: boolean
 }

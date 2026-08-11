@@ -67,6 +67,12 @@ export type TokenInfo = {
   isTrusted: boolean
 }
 
+export type OwnedTokenInfo = TokenInfo & {
+  balanceAmount: number
+  balanceAsset: string
+  usdValue?: number | null
+}
+
 export type AlcorRoute = {
   route: number[]
   memo: string
@@ -163,6 +169,7 @@ export type RouteRequest = {
   outputPrecision?: number
   slippage?: number
   maxHops?: number
+  fresh?: boolean
 }
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -172,7 +179,7 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
 }
 
 async function getAbsolute<T>(url: string): Promise<T> {
-  const r = await fetch(url)
+  const r = await fetch(url, { cache: 'no-store' })
   if (!r.ok) throw await toApiError(r)
   return r.json() as Promise<T>
 }
@@ -213,6 +220,9 @@ export const api = {
   tokens: (q?: string, limit = 500) =>
     get<TokenInfo[]>(`/tokens?${qs({ q, limit })}`),
 
+  ownedTokens: (account: string, limit = 200) =>
+    get<OwnedTokenInfo[]>(`/tokens/owned/${encodeURIComponent(account)}?${qs({ limit })}`),
+
   trades: (src: string, pairId: string, limit = 100, before?: number) =>
     get<Trade[]>(`/trades?src=${src}&pairId=${encodeURIComponent(pairId)}&limit=${limit}${before ? `&before=${before}` : ''}`),
 
@@ -247,6 +257,7 @@ export const api = {
       outputPrecision: request.outputPrecision,
       slippage: request.slippage ?? 1,
       maxHops: request.maxHops ?? 3,
+      fresh: request.fresh ? true : undefined,
     })}`),
 
   alcorRoute: async (request: RouteRequest) => {

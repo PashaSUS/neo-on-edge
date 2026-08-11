@@ -11,9 +11,11 @@
 
 ## Routing
 
-`NeoRouteQuoteService` searches recent AMM snapshots, Alcor v3 trades, and Alcor order-book fills. It also asks Alcor for a live route for the exact request.
+`NeoRouteQuoteService` searches recent constant-product AMM snapshots and Alcor order-book fills. It also asks Alcor for a live route for the exact request.
 
-The live lookup fixes an important gap in the historical graph: Alcor edges previously required at least two indexed trades in the last 12 hours and represented only the observed direction. Quiet pools could therefore disappear despite having useful rates. A live Alcor route is converted to `poolId@a2` steps only when it is a single sequential path that `swap.neo` can reproduce.
+Historical Alcor V2/V3 trade averages are not executable quotes and are excluded from the NeoOnEdge graph. Concentrated-liquidity output depends on the current tick/liquidity ranges and the pool-specific fee.
+
+A live Alcor route is converted to a `poolId@a2` step only when it contains one pool that `swap.neo` can reproduce exactly. Its contract minimum is capped by Alcor's returned `minReceived`. Multi-pool Alcor routes remain available through the direct Alcor route, which submits Alcor's original combined memo to `swap.alcor`.
 
 ## Token Exclusions
 

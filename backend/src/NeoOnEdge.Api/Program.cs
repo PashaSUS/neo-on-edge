@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using NeoOnEdge.Api.Extensions;
 using NeoOnEdge.Api.Hubs;
 using NeoOnEdge.Api.Services;
 using NeoOnEdge.Core.Configuration;
@@ -8,9 +9,9 @@ using NeoOnEdge.Core.Data;
 using NeoOnEdge.Core.Services;
 using NeoOnEdge.Indexer;
 using NeoOnEdge.Workers;
+using Serilog;
 using StackExchange.Redis;
 using System.Net.Http.Headers;
-using Serilog;
 
 Serilog.Debugging.SelfLog.Enable(message => Console.Error.WriteLine($"[Serilog self-log] {message}"));
 
@@ -22,7 +23,6 @@ builder.Host.UseSerilog((context, services, loggerConfig) =>
     loggerConfig
         .ReadFrom.Configuration(context.Configuration)
         .Enrich.FromLogContext()
-        // Silence noisy framework namespaces
         .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
         .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", Serilog.Events.LogEventLevel.Warning)
         .MinimumLevel.Override("System.Net.Http", Serilog.Events.LogEventLevel.Warning)
@@ -63,24 +63,19 @@ static string? NormalizeSeqUrlForContainer(string? seqUrl)
     return seqUrl;
 }
 
-// ── Configuration ──────────────────────────────────────────────────────────
 var appSettings = builder.Configuration.GetSection("App").Get<AppSettings>()
     ?? throw new InvalidOperationException("App settings section is missing");
 builder.Services.Configure<AppSettings>(builder.Configuration.GetSection("App"));
 
-// ── PostgreSQL ─────────────────────────────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(opt =>
     opt.UseNpgsql(appSettings.PostgresConnectionString));
 
-// ── Redis ──────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect(appSettings.RedisConnectionString));
 
-// ── SignalR ────────────────────────────────────────────────────────────────
 builder.Services.AddSignalR();
 builder.Services.AddHostedService<RedisSignalRBridge>();
 
-// ── CORS ───────────────────────────────────────────────────────────────────
 builder.Services.AddCors(opt => opt.AddDefaultPolicy(p =>
 {
     var origins = appSettings.AllowedOrigins.Split(',', StringSplitOptions.TrimEntries);
@@ -88,7 +83,6 @@ builder.Services.AddCors(opt => opt.AddDefaultPolicy(p =>
     else p.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
 }));
 
-// ── Compression ────────────────────────────────────────────────────────────
 builder.Services.AddResponseCompression(opt =>
 {
     opt.EnableForHttps = true;
@@ -96,10 +90,8 @@ builder.Services.AddResponseCompression(opt =>
     opt.Providers.Add<GzipCompressionProvider>();
 });
 
-// ── Controllers ────────────────────────────────────────────────────────────
 builder.Services.AddControllers();
 
-// ── Background services ────────────────────────────────────────────────────
 builder.Services.AddSingleton<TokenRegistry>();
 builder.Services.AddHostedService<MemoryMonitorService>();
 builder.Services.AddHostedService<WaxShipReader>();
@@ -107,11 +99,11 @@ builder.Services.AddHostedService<KlinesWorker>();
 builder.Services.AddHostedService<StatsWorker>();
 builder.Services.AddHostedService<RetentionCleanupWorker>();
 builder.Services.AddScoped<TokenCatalogService>();
-builder.Services.AddScoped<NeoRouteQuoteService>();
+builder.Services.AddNeoRouteQuoteServices();
+builder.Services.AddSingleton<ArbitrageScannerState>();
 builder.Services.AddSingleton<ArbitrageExecutionService>();
 builder.Services.AddHostedService<ArbitrageScannerWorker>();
 
-// ── Alcor router service ───────────────────────────────────────────────────
 builder.Services.AddHttpClient("alcor", (sp, client) =>
 {
     var settings = sp.GetRequiredService<IOptions<AppSettings>>().Value;
@@ -128,6 +120,14 @@ builder.Services.AddHttpClient("wax-rpc", (sp, client) =>
         new MediaTypeWithQualityHeaderValue("application/json"));
     client.Timeout = TimeSpan.FromSeconds(20);
 });
+builder.Services.AddHttpClient("wax-light-api", (sp, client) =>
+{
+    var settings = sp.GetRequiredService<IOptions<AppSettings>>().Value;
+    client.BaseAddress = new Uri(settings.WaxLightApiEndpoint);
+    client.DefaultRequestHeaders.Accept.Add(
+        new MediaTypeWithQualityHeaderValue("application/json"));
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
 builder.Services.AddHttpClient("arbitrage-executor", (sp, client) =>
 {
     var settings = sp.GetRequiredService<IOptions<AppSettings>>().Value;
@@ -136,40 +136,9 @@ builder.Services.AddHttpClient("arbitrage-executor", (sp, client) =>
         new MediaTypeWithQualityHeaderValue("application/json"));
     client.Timeout = TimeSpan.FromSeconds(30);
 });
-builder.Services.AddSingleton<AlcorRouterService>();
-
 var app = builder.Build();
 
-// ── Create DB schema on startup ─────────────────────────────────────────────
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.EnsureCreatedAsync();
-    await db.Database.ExecuteSqlRawAsync(
-        """
-        CREATE TABLE IF NOT EXISTS route_excluded_tokens (
-            contract varchar(13) NOT NULL,
-            symbol varchar(12) NOT NULL,
-            reason text NOT NULL,
-            created_at timestamptz NOT NULL DEFAULT now(),
-            CONSTRAINT pk_route_excluded_tokens PRIMARY KEY (contract, symbol)
-        );
-
-        INSERT INTO route_excluded_tokens (contract, symbol, reason)
-        VALUES
-            ('chadtoken.gm', 'CHAD', 'Token charges transfer fees to the receiving exchange account.'),
-            ('chadtoken.gm', 'BBCHAD', 'Token charges transfer fees to the receiving exchange account.'),
-            ('waxpepetoken', 'KEK', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'BUZZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'LADYZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'CATERZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'DRAGONZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'HOPPERZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('buzzingarden', 'BUTTERZ', 'Token charges transfer fees to the receiving exchange account.'),
-            ('token.wienr', 'WIENR', 'Token charges transfer fees to the receiving exchange account.')
-        ON CONFLICT (contract, symbol) DO NOTHING;
-        """);
-}
+await app.InitializeDatabaseAsync();
 
 app.UseCors();
 app.UseResponseCompression();
@@ -177,4 +146,3 @@ app.MapControllers();
 app.MapHub<NeoEdgeHub>("/hub");
 
 app.Run();
-

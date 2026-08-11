@@ -14,6 +14,20 @@ services:
       timeout: 5s
       retries: 5
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    "${PGADMIN_EMAIL:-admin@neoedge.local}"
+      PGADMIN_DEFAULT_PASSWORD: "${POSTGRES_PASSWORD:?required}"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${HOST_BIND_ADDRESS:-0.0.0.0}:${PGADMIN_HOST_PORT:-15175}:80"
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -35,7 +49,7 @@ services:
     volumes:
       - seq_data:/data
     ports:
-      - "${SEQ_HOST_PORT:-5404}:80"
+      - "${HOST_BIND_ADDRESS:-0.0.0.0}:${SEQ_HOST_PORT:-5404}:80"
 
   backend:
     build:
@@ -92,6 +106,7 @@ services:
       App__ArbitrageExecutorUrl:       "http://arbitrage-executor:8787"
       App__ArbitrageExecutorSecret:    "${ARBITRAGE_EXECUTOR_SECRET:-}"
       App__ArbitrageMaxExecutionWax:   "${ARBITRAGE_MAX_EXECUTION_WAX:-5}"
+      App__ArbitrageExecutionSlippage: "${ARBITRAGE_EXECUTION_SLIPPAGE:-3}"
       App__ArbitrageExecutionCooldownMinutes: "${ARBITRAGE_EXECUTION_COOLDOWN_MINUTES:-30}"
       App__ArbitrageBalanceWaitSeconds: "${ARBITRAGE_BALANCE_WAIT_SECONDS:-30}"
       App__SeqEnabled:               "${SEQ_ENABLED:-false}"
@@ -99,7 +114,7 @@ services:
       App__SeqApiKey:                "${SEQ_API_KEY:-}"
       ASPNETCORE_URLS:               "http://+:5000"
     ports:
-      - "${API_HOST_PORT:-15174}:5000"
+      - "${HOST_BIND_ADDRESS:-0.0.0.0}:${API_HOST_PORT:-15174}:5000"
 
   arbitrage-executor:
     build:
@@ -109,6 +124,7 @@ services:
     environment:
       PORT: "8787"
       WAX_RPC_ENDPOINT: "${WAX_RPC_ENDPOINT:-https://wax.greymass.com}"
+      WAX_RPC_ENDPOINTS: "${WAX_RPC_ENDPOINTS:-}"
       ARBITRAGE_ACCOUNT: "${ARBITRAGE_ACCOUNT:-}"
       ARBITRAGE_PERMISSION: "${ARBITRAGE_PERMISSION:-active}"
       ARBITRAGE_PRIVATE_KEY: "${ARBITRAGE_PRIVATE_KEY:-}"
@@ -128,9 +144,10 @@ services:
     depends_on:
       - backend
     ports:
-      - "${APP_HOST_PORT:-15173}:3000"
+      - "${HOST_BIND_ADDRESS:-0.0.0.0}:${APP_HOST_PORT:-15173}:3000"
 
 volumes:
   postgres_data:
+  pgadmin_data:
   redis_data:
   seq_data:

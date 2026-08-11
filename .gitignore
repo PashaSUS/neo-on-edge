@@ -101,6 +101,8 @@ web_modules/
 
 # dotenv environment variable files
 .env
+.env.development
+.env.production
 .env.development.local
 .env.test.local
 .env.production.local
@@ -156,3 +158,7 @@ out
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+/.pnpm-store
+/contract/target
+/backend/src/NeoOnEdge.Api/bin
+/backend/src/NeoOnEdge.Api/obj

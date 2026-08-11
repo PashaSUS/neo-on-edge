@@ -26,6 +26,8 @@ ARBITRAGE_MAX_EXECUTION_WAX=1
 
 `deploy.bat` prompts for these values and hides private-key input. Start with a small execution cap.
 
+If your RPC provider is inconsistent, the executor can use a dedicated comma-separated fallback list via `WAX_RPC_ENDPOINTS`. This affects only the isolated signer container; the main API still uses `WAX_RPC_ENDPOINT`.
+
 ## Execution Sequence
 
 1. Select an alert-safe opportunity below the execution cap.

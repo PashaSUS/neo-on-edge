@@ -3,12 +3,15 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using SUS.EOS.Sharp.Cryptography;
+using SUS.EOS.Sharp.Models;
 using SUS.EOS.Sharp.Services;
 
 var builder = WebApplication.CreateSlimBuilder(args);
 builder.WebHost.UseUrls("http://0.0.0.0:8787");
 
-var rpcEndpoint = GetRequiredSetting("WAX_RPC_ENDPOINT", required: false) ?? "https://wax.greymass.com";
+var rpcEndpoints = GetRpcEndpoints();
+var rpcEndpointSummary = string.Join(", ", rpcEndpoints);
+var transferAbi = CreateTransferAbi();
 var account = GetRequiredSetting("ARBITRAGE_ACCOUNT", required: false) ?? "";
 var permission = GetRequiredSetting("ARBITRAGE_PERMISSION", required: false) ?? "active";
 var sharedSecret = GetRequiredSetting("ARBITRAGE_EXECUTOR_SECRET", required: false) ?? "";
@@ -23,7 +26,7 @@ var configured =
     !string.IsNullOrWhiteSpace(sharedSecret) &&
     EosioKey.IsValidPrivateKey(privateKey);
 
-builder.Services.AddSingleton<IAntelopeBlockchainClient>(_ => new AntelopeHttpClient(rpcEndpoint));
+builder.Services.AddSingleton<IAntelopeBlockchainClient>(_ => new AntelopeHttpClient(rpcEndpoints));
 builder.Services.AddSingleton<IAntelopeTransactionService, AntelopeTransactionService>();
 
 var app = builder.Build();
@@ -63,44 +66,52 @@ app.MapPost("/transfer", async (
             quantity = transfer.Quantity,
             memo = transfer.Memo
         };
-        var binaryData = await client.AbiJsonToBinAsync(
-            transfer.TokenContract,
-            "transfer",
-            actionData,
-            ct);
-        if (binaryData.Length == 0)
-            throw new InvalidOperationException("The token contract returned empty transfer action data.");
-
-        var chainInfo = await client.GetInfoAsync(ct);
-        var signed = await transactions.BuildAndSignWithBinaryDataAsync(
+        var chainInfo = await GetChainInfoAsync(client, rpcEndpointSummary, ct);
+        var signed = await BuildTransferAsync(
+            transactions,
             chainInfo,
             account,
             privateKey,
             transfer.TokenContract,
-            "transfer",
-            binaryData,
+            transferAbi,
+            actionData,
             TimeSpan.FromSeconds(60),
             permission);
-        var result = await client.PushTransactionAsync(
-            new
-            {
-                signatures = signed.Signatures,
-                compression = 0,
-                packed_context_free_data = "",
-                packed_trx = signed.PackedTransaction
-            },
-            ct);
+        var result = await PushTransferAsync(client, signed, rpcEndpointSummary, ct);
 
         return Results.Ok(new TransferResponse(result.TransactionId, null));
     }
     catch (Exception ex)
     {
-        app.Logger.LogError(ex, "Arbitrage transfer failed for {Quantity} to {Recipient}", transfer.Quantity, transfer.To);
-        return Results.Json(new TransferResponse(null, ex.Message), statusCode: 500);
+        app.Logger.LogError(
+            ex,
+            "Arbitrage transfer failed for {Quantity} from {Account} via {TokenContract} to {Recipient}",
+            transfer.Quantity,
+            account,
+            transfer.TokenContract,
+            transfer.To);
+        return Results.Json(
+            new TransferResponse(
+                null,
+                $"Executor transfer failed for {transfer.Quantity} from {account} via {transfer.TokenContract} to {transfer.To}: {ex.Message}"),
+            statusCode: 500);
     }
 });
 
 app.Run();
+
+static string[] GetRpcEndpoints()
+{
+    var configured = GetRequiredSetting("WAX_RPC_ENDPOINTS", required: false)
+        ?? GetRequiredSetting("WAX_RPC_ENDPOINT", required: false)
+        ?? "https://wax.greymass.com";
+
+    return configured
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(endpoint => !string.IsNullOrWhiteSpace(endpoint))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+}
 
 static string? GetRequiredSetting(string name, bool required)
 {
@@ -143,6 +154,110 @@ static bool IsPositiveQuantity(string? value)
     return decimal.TryParse(amount, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) &&
            parsed > 0;
 }
+
+static async Task<ChainInfo> GetChainInfoAsync(
+    IAntelopeBlockchainClient client,
+    string rpcEndpointSummary,
+    CancellationToken ct)
+{
+    try
+    {
+        return await client.GetInfoAsync(ct);
+    }
+    catch (Exception ex)
+    {
+        throw new InvalidOperationException(
+            $"WAX RPC get_info failed at {DescribeRpcEndpoint(client, rpcEndpointSummary)}: {ex.Message}",
+            ex);
+    }
+}
+
+static async Task<SignedTransactionResult> BuildTransferAsync(
+    IAntelopeTransactionService transactions,
+    ChainInfo chainInfo,
+    string account,
+    string privateKey,
+    string tokenContract,
+    AbiDefinition transferAbi,
+    object actionData,
+    TimeSpan expiration,
+    string permission)
+{
+    try
+    {
+        return await transactions.BuildAndSignWithAbiAsync(
+            transferAbi,
+            chainInfo,
+            account,
+            privateKey,
+            tokenContract,
+            "transfer",
+            actionData,
+            expiration,
+            permission);
+    }
+    catch (Exception ex)
+    {
+        throw new InvalidOperationException(
+            $"Local transfer serialization failed for {tokenContract}::transfer: {ex.Message}",
+            ex);
+    }
+}
+
+static async Task<TransactionResult> PushTransferAsync(
+    IAntelopeBlockchainClient client,
+    SignedTransactionResult signed,
+    string rpcEndpointSummary,
+    CancellationToken ct)
+{
+    try
+    {
+        return await client.PushTransactionAsync(
+            new
+            {
+                signatures = signed.Signatures,
+                compression = 0,
+                packed_context_free_data = "",
+                packed_trx = signed.PackedTransaction
+            },
+            ct);
+    }
+    catch (Exception ex)
+    {
+        throw new InvalidOperationException(
+            $"WAX RPC push_transaction failed at {DescribeRpcEndpoint(client, rpcEndpointSummary)}: {ex.Message}",
+            ex);
+    }
+}
+
+static string DescribeRpcEndpoint(IAntelopeBlockchainClient client, string fallback)
+    => client is AntelopeHttpClient httpClient ? httpClient.Endpoint : fallback;
+
+static AbiDefinition CreateTransferAbi() => new()
+{
+    Structs =
+    [
+        new AbiStruct
+        {
+            Name = "transfer",
+            Fields =
+            [
+                new AbiField { Name = "from", Type = "name" },
+                new AbiField { Name = "to", Type = "name" },
+                new AbiField { Name = "quantity", Type = "asset" },
+                new AbiField { Name = "memo", Type = "string" }
+            ]
+        }
+    ],
+    Actions =
+    [
+        new AbiAction
+        {
+            Name = "transfer",
+            Type = "transfer"
+        }
+    ]
+};
 
 internal sealed record TransferRequest(string TokenContract, string To, string Quantity, string? Memo);
 internal sealed record TransferResponse(string? TransactionId, string? Error);

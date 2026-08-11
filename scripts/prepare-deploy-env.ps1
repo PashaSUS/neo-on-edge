@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Root,
 
-    [string]$RequestedContractAccount = "",
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("development", "production")]
+    [string]$Environment,
 
     [Parameter(Mandatory = $true)]
     [string]$OutCmd
@@ -10,7 +12,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path $Root).Path
-$envPath = Join-Path $Root ".env"
+$envPath = Join-Path $Root ".env.$Environment"
+$examplePath = Join-Path $Root ".env.$Environment.example"
+$legacyEnvPath = Join-Path $Root ".env"
+$isDevelopment = $Environment -eq "development"
 
 function New-Secret([int]$Bytes) {
     $buffer = New-Object byte[] $Bytes
@@ -183,19 +188,21 @@ function Cmd-Value([string]$Value) {
 }
 
 $values = Read-EnvValues $envPath
+if ($values.Count -eq 0 -and !$isDevelopment -and (Test-Path $legacyEnvPath)) {
+    $values = Read-EnvValues $legacyEnvPath
+    Write-Host "Using legacy .env values as the initial production configuration."
+}
+if ($values.Count -eq 0 -and (Test-Path $examplePath)) {
+    $values = Read-EnvValues $examplePath
+}
 
 Write-Host ""
-Write-Host "== NeoOnEdge deployment setup =="
-Write-Host "This updates local .env values. Secrets are not written to appsettings.json."
+Write-Host "== NeoOnEdge $Environment deployment setup =="
+Write-Host "This updates $envPath. Secrets are not written to appsettings.json."
 Write-Host ""
 
-$contractDefault = $RequestedContractAccount
-if ([string]::IsNullOrWhiteSpace($contractDefault)) {
-    $contractDefault = Get-ConfiguredValue $values "CONTRACT_ACCOUNT" $env:CONTRACT_ACCOUNT
-}
-if ([string]::IsNullOrWhiteSpace($contractDefault)) {
-    $contractDefault = "swap.neo"
-}
+$contractFallback = if ($isDevelopment) { "test.pasha" } else { "swap.neo" }
+$contractDefault = Get-ConfiguredValue $values "CONTRACT_ACCOUNT" $contractFallback
 $contractAccount = Read-Text "Contract account" $contractDefault
 
 $appPortDefault = Get-ConfiguredValue $values "APP_HOST_PORT" ""
@@ -210,27 +217,26 @@ if ([string]::IsNullOrWhiteSpace($apiPortDefault)) {
 }
 $apiHostPort = Read-Port "Host port for the backend API/SignalR" $apiPortDefault
 
-$allowedDefault = Get-ConfiguredValue $values "ALLOWED_ORIGINS" "http://localhost:$appHostPort,http://localhost:3177"
-$allowedDefault = $allowedDefault -replace "localhost:18080", "localhost:$appHostPort"
-$allowedOrigins = Read-Text "Allowed origins" $allowedDefault
+$pgadminPortDefault = Get-ConfiguredValue $values "PGADMIN_HOST_PORT" "15175"
+$pgadminHostPort = Read-Port "Host port for pgAdmin" $pgadminPortDefault
+$pgadminEmail = Read-Text "pgAdmin login email" (Get-ConfiguredValue $values "PGADMIN_EMAIL" "admin@neoedge.local")
 
-$publicApiDefault = Normalize-PublicEndpoint (Get-ConfiguredValue $values "PUBLIC_API_BASE_URL" "/api") "/api"
-$publicHubDefault = Normalize-PublicEndpoint (Get-ConfiguredValue $values "PUBLIC_HUB_URL" "/hub") "/hub"
-$publicApiBaseUrl = Normalize-PublicEndpoint (Read-Text "Public API base URL for the website (/api or full backend URL)" $publicApiDefault) "/api"
-$publicHubUrl = Normalize-PublicEndpoint (Read-Text "Public SignalR hub URL for the website (/hub or full backend URL)" $publicHubDefault) "/hub"
-
-$deployDefault = To-Bool $env:DEPLOY_CONTRACT $false
-$deployContract = Read-YesNo "Deploy the smart contract with cleos now" $deployDefault
-$cleosWallet = Get-ConfiguredValue $values "CLEOS_WALLET" $env:CLEOS_WALLET
-if ([string]::IsNullOrWhiteSpace($cleosWallet)) {
-    $cleosWallet = "default"
+if ($isDevelopment) {
+    $hostBindAddress = "127.0.0.1"
+    $allowedOrigins = "http://localhost:$appHostPort,http://127.0.0.1:$appHostPort,http://localhost:3177,http://127.0.0.1:3177"
+    $publicApiBaseUrl = "http://localhost:$apiHostPort/api"
+    $publicHubUrl = "http://localhost:$apiHostPort/hub"
+    Write-Host "Development ports will bind to 127.0.0.1 only."
 }
-$importContractPrivateKey = $false
-$setCodePermission = $false
-if ($deployContract) {
-    $cleosWallet = Read-Text "cleos wallet name" $cleosWallet
-    $importContractPrivateKey = Read-YesNo "Import the contract private key into this cleos wallet before deploy" $false
-    $setCodePermission = Read-YesNo "Ensure the contract account has eosio.code permission for inline swaps" $true
+else {
+    $hostBindAddress = Get-ConfiguredValue $values "HOST_BIND_ADDRESS" "0.0.0.0"
+    $allowedDefault = Get-ConfiguredValue $values "ALLOWED_ORIGINS" "https://yourdomain.com"
+    $allowedOrigins = Read-Text "Allowed production origins" $allowedDefault
+
+    $publicApiDefault = Normalize-PublicEndpoint (Get-ConfiguredValue $values "PUBLIC_API_BASE_URL" "https://api.yourdomain.com/api") "/api"
+    $publicHubDefault = Normalize-PublicEndpoint (Get-ConfiguredValue $values "PUBLIC_HUB_URL" "https://api.yourdomain.com/hub") "/hub"
+    $publicApiBaseUrl = Normalize-PublicEndpoint (Read-Text "Public API base URL for the website" $publicApiDefault) "/api"
+    $publicHubUrl = Normalize-PublicEndpoint (Read-Text "Public SignalR hub URL for the website" $publicHubDefault) "/hub"
 }
 
 $scannerDefault = To-Bool (Get-ConfiguredValue $values "ARBITRAGE_SCANNER_ENABLED" "false") $false
@@ -240,7 +246,7 @@ if ($enableScanner) {
     $enableDiscord = Read-YesNo "Send scanner alerts to Discord" (![string]::IsNullOrWhiteSpace($discordWebhook))
     if ($enableDiscord) {
         if (![string]::IsNullOrWhiteSpace($discordWebhook)) {
-            $keepWebhook = Read-YesNo "Keep the existing Discord webhook URL from .env" $true
+            $keepWebhook = Read-YesNo "Keep the existing Discord webhook URL from $Environment configuration" $true
             if (!$keepWebhook) {
                 $discordWebhook = ""
             }
@@ -277,7 +283,7 @@ if ($enableExecution) {
     $arbitragePermission = Read-Text "Arbitrage account permission" $arbitragePermission
 
     if (![string]::IsNullOrWhiteSpace($arbitragePrivateKey)) {
-        $keepArbitrageKey = Read-YesNo "Keep the existing arbitrage private key from .env" $true
+        $keepArbitrageKey = Read-YesNo "Keep the existing arbitrage private key from $Environment configuration" $true
         if (!$keepArbitrageKey) {
             $arbitragePrivateKey = ""
         }
@@ -301,7 +307,7 @@ if (Needs-GeneratedSecret $postgresPassword) {
     Write-Host "Generated PostgreSQL password."
 }
 else {
-    $regenPostgres = Read-YesNo "Regenerate PostgreSQL password in .env" $false
+    $regenPostgres = Read-YesNo "Regenerate PostgreSQL password in $Environment configuration" $false
     if ($regenPostgres) {
         $postgresPassword = New-Secret 36
         Write-Host "Generated PostgreSQL password. Existing database volumes may need ALTER USER if already initialized."
@@ -314,7 +320,7 @@ if (Needs-GeneratedSecret $adminSecret) {
     Write-Host "Generated admin secret."
 }
 else {
-    $regenAdmin = Read-YesNo "Regenerate admin secret in .env" $false
+    $regenAdmin = Read-YesNo "Regenerate admin secret in $Environment configuration" $false
     if ($regenAdmin) {
         $adminSecret = New-Secret 48
         Write-Host "Generated admin secret."
@@ -325,6 +331,10 @@ $postgresDb = Read-Text "PostgreSQL database" (Get-ConfiguredValue $values "POST
 $postgresUser = Read-Text "PostgreSQL user" (Get-ConfiguredValue $values "POSTGRES_USER" "neoedge")
 
 $envText = @"
+# -- Deployment ---------------------------------------------------------------
+DEPLOY_ENVIRONMENT=$Environment
+HOST_BIND_ADDRESS=$hostBindAddress
+
 # -- PostgreSQL ---------------------------------------------------------------
 POSTGRES_DB=$postgresDb
 POSTGRES_USER=$postgresUser
@@ -333,6 +343,9 @@ POSTGRES_PASSWORD=$postgresPassword
 # -- Host ports ---------------------------------------------------------------
 APP_HOST_PORT=$appHostPort
 API_HOST_PORT=$apiHostPort
+PGADMIN_HOST_PORT=$pgadminHostPort
+PGADMIN_EMAIL=$pgadminEmail
+SEQ_HOST_PORT=$(Get-ConfiguredValue $values "SEQ_HOST_PORT" "5404")
 PUBLIC_API_BASE_URL=$publicApiBaseUrl
 PUBLIC_HUB_URL=$publicHubUrl
 
@@ -349,14 +362,19 @@ SHIP_RECONNECT_DELAY_SECONDS=$(Get-ConfiguredValue $values "SHIP_RECONNECT_DELAY
 START_BLOCK=$(Get-ConfiguredValue $values "START_BLOCK" "0")
 REPLAY_ENABLED=$(Get-ConfiguredValue $values "REPLAY_ENABLED" "true")
 CONTRACT_ACCOUNT=$contractAccount
+NEO_ROUTE_FEE_BPS=$(Get-ConfiguredValue $values "NEO_ROUTE_FEE_BPS" "30")
 
 # -- API ----------------------------------------------------------------------
 ADMIN_SECRET=$adminSecret
 ALLOWED_ORIGINS=$allowedOrigins
 ALCOR_ENDPOINT=$(Get-ConfiguredValue $values "ALCOR_ENDPOINT" "https://wax.alcor.exchange")
 WAX_RPC_ENDPOINT=$(Get-ConfiguredValue $values "WAX_RPC_ENDPOINT" "https://wax.greymass.com")
+WAX_RPC_ENDPOINTS=$(Get-ConfiguredValue $values "WAX_RPC_ENDPOINTS" "")
 DATA_RETENTION_DAYS=$(Get-ConfiguredValue $values "DATA_RETENTION_DAYS" "30")
 DATA_RETENTION_CLEANUP_INTERVAL_HOURS=$(Get-ConfiguredValue $values "DATA_RETENTION_CLEANUP_INTERVAL_HOURS" "6")
+SEQ_ENABLED=$(Get-ConfiguredValue $values "SEQ_ENABLED" "false")
+SEQ_URL=$(Get-ConfiguredValue $values "SEQ_URL" "http://seq")
+SEQ_API_KEY=$(Get-ConfiguredValue $values "SEQ_API_KEY" "")
 
 # -- Dry-run arbitrage monitor ------------------------------------------------
 ARBITRAGE_SCANNER_ENABLED=$(Bool-Text $enableScanner)
@@ -379,21 +397,22 @@ ARBITRAGE_PERMISSION=$arbitragePermission
 ARBITRAGE_PRIVATE_KEY=$arbitragePrivateKey
 ARBITRAGE_EXECUTOR_SECRET=$executorSecret
 ARBITRAGE_MAX_EXECUTION_WAX=$(Get-ConfiguredValue $values "ARBITRAGE_MAX_EXECUTION_WAX" "5")
+ARBITRAGE_EXECUTION_SLIPPAGE=$(Get-ConfiguredValue $values "ARBITRAGE_EXECUTION_SLIPPAGE" "3")
 ARBITRAGE_EXECUTION_COOLDOWN_MINUTES=$(Get-ConfiguredValue $values "ARBITRAGE_EXECUTION_COOLDOWN_MINUTES" "30")
 ARBITRAGE_BALANCE_WAIT_SECONDS=$(Get-ConfiguredValue $values "ARBITRAGE_BALANCE_WAIT_SECONDS" "30")
 "@
 
 Set-Content -Path $envPath -Value $envText -Encoding ASCII
-Write-Host "Wrote local .env."
+Write-Host "Wrote $envPath."
 
 $cmdText = @"
 @echo off
-set "CONTRACT_ACCOUNT=$(Cmd-Value $contractAccount)"
-set "DEPLOY_CONTRACT=$(Bool-Text $deployContract)"
-set "CLEOS_WALLET=$(Cmd-Value $cleosWallet)"
-set "IMPORT_CONTRACT_PRIVATE_KEY=$(Bool-Text $importContractPrivateKey)"
-set "SET_CODE_PERMISSION=$(Bool-Text $setCodePermission)"
+set "DEPLOY_ENVIRONMENT=$(Cmd-Value $Environment)"
+set "ENV_FILE=$(Cmd-Value $envPath)"
 set "APP_HOST_PORT=$(Cmd-Value $appHostPort)"
 set "API_HOST_PORT=$(Cmd-Value $apiHostPort)"
+set "APP_URL=http://localhost:$(Cmd-Value $appHostPort)"
+set "API_URL=http://localhost:$(Cmd-Value $apiHostPort)/api"
+set "PGADMIN_URL=http://localhost:$(Cmd-Value $pgadminHostPort)"
 "@
 Set-Content -Path $OutCmd -Value $cmdText -Encoding ASCII

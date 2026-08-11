@@ -71,7 +71,7 @@ public sealed class AlcorRouterService(
     /// <param name="receiver">WAX account that will receive the output tokens.</param>
     /// <param name="slippage">Slippage tolerance in percent (default 1).</param>
     /// <param name="maxHops">Maximum Alcor v2 pool hops (default 3).</param>
-    public async Task<AlcorRouteResult?> GetRouteAsync(
+    public Task<AlcorRouteResult?> GetRouteAsync(
         string input,
         string output,
         long   amount,
@@ -80,20 +80,46 @@ public sealed class AlcorRouterService(
         double slippage = 1.0,
         int    maxHops  = 3,
         CancellationToken ct = default)
+        => GetRouteCoreAsync(input, output, amount, inputPrecision, receiver, slippage, maxHops, true, ct);
+
+    public Task<AlcorRouteResult?> GetFreshRouteAsync(
+        string input,
+        string output,
+        long amount,
+        int inputPrecision,
+        string receiver,
+        double slippage = 1.0,
+        int maxHops = 3,
+        CancellationToken ct = default)
+        => GetRouteCoreAsync(input, output, amount, inputPrecision, receiver, slippage, maxHops, false, ct);
+
+    private async Task<AlcorRouteResult?> GetRouteCoreAsync(
+        string input,
+        string output,
+        long amount,
+        int inputPrecision,
+        string receiver,
+        double slippage,
+        int maxHops,
+        bool readCache,
+        CancellationToken ct)
     {
         // ── Cache lookup ──────────────────────────────────────────────────
         string alcorAmount = FormatRawTokenAmount(amount, inputPrecision);
         string cacheKey = $"alcor:route:v2:{input}:{output}:{amount}:{inputPrecision}:{receiver}:{slippage}:{maxHops}";
-        var cached = await _cache.StringGetAsync(cacheKey);
-        if (cached.HasValue)
+        if (readCache)
         {
-            try
+            var cached = await _cache.StringGetAsync(cacheKey);
+            if (cached.HasValue)
             {
-                return JsonSerializer.Deserialize<AlcorRouteResult>(cached.ToString(), JsonOpts);
-            }
-            catch (JsonException)
-            {
-                // stale / corrupted cache entry — fall through to fresh fetch
+                try
+                {
+                    return JsonSerializer.Deserialize<AlcorRouteResult>(cached.ToString(), JsonOpts);
+                }
+                catch (JsonException)
+                {
+                    // Ignore invalid cache entries and fetch a fresh route.
+                }
             }
         }
 

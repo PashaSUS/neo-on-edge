@@ -21,6 +21,7 @@ public class AppSettings
     public string AllowedOrigins { get; set; } = "*";
     public string AlcorEndpoint { get; set; } = "https://wax.alcor.exchange";
     public string WaxRpcEndpoint { get; set; } = "https://wax.greymass.com";
+    public string WaxLightApiEndpoint { get; set; } = "https://wax.light-api.net";
     public int DataRetentionDays { get; set; } = 30;
     public int DataRetentionCleanupIntervalHours { get; set; } = 6;
     public bool ArbitrageScannerEnabled { get; set; } = false;
@@ -42,6 +43,7 @@ public class AppSettings
     public string ArbitrageExecutorUrl { get; set; } = "http://localhost:8787";
     public string ArbitrageExecutorSecret { get; set; } = "";
     public decimal ArbitrageMaxExecutionWax { get; set; } = 5m;
+    public double ArbitrageExecutionSlippage { get; set; } = 3.0;
     public int ArbitrageExecutionCooldownMinutes { get; set; } = 30;
     public int ArbitrageBalanceWaitSeconds { get; set; } = 30;
     // Seq logging

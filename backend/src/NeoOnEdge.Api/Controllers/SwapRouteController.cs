@@ -46,6 +46,7 @@ public sealed class SwapRouteController(
         [FromQuery] int    outputPrecision = 8,
         [FromQuery] double slippage = 1.0,
         [FromQuery] int    maxHops  = 3,
+        [FromQuery] bool   fresh = false,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(input)  ||
@@ -58,8 +59,8 @@ public sealed class SwapRouteController(
             : receiver.Trim();
         var boundedMaxHops = Math.Clamp(maxHops, 1, Math.Max(1, settings.Value.NeoRouteMaxHops));
 
-        var neoQuote = await neoRoutes.GetRouteQuoteAsync(input, output, amount, quoteReceiver, inputPrecision, outputPrecision, slippage, boundedMaxHops, settings.Value.ContractAccount, ct);
-        var splitQuote = await neoRoutes.GetSplitRouteQuoteAsync(input, output, amount, quoteReceiver, inputPrecision, outputPrecision, slippage, boundedMaxHops, settings.Value.ContractAccount, ct);
+        var neoQuote = await neoRoutes.GetRouteQuoteAsync(input, output, amount, quoteReceiver, inputPrecision, outputPrecision, slippage, boundedMaxHops, settings.Value.ContractAccount, ct, readAlcorCache: !fresh);
+        var splitQuote = await neoRoutes.GetSplitRouteQuoteAsync(input, output, amount, quoteReceiver, inputPrecision, outputPrecision, slippage, boundedMaxHops, settings.Value.ContractAccount, ct, readAlcorCache: !fresh);
         var neoRoute = neoQuote.Route;
         var splitRoute = splitQuote.Route;
 

@@ -86,7 +86,9 @@ public class AppDbContext : DbContext
             e.Property(x => x.Contract).HasColumnName("contract").HasMaxLength(13);
             e.Property(x => x.Symbol).HasColumnName("symbol").HasMaxLength(12);
             e.Property(x => x.Reason).HasColumnName("reason");
-            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.CreatedAt)
+                .HasColumnName("created_at")
+                .HasDefaultValueSql("now()");
         });
     }
 }
