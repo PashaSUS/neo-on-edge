@@ -35,6 +35,113 @@ app.MapGet("/health", () => configured
     ? Results.Ok(new { configured = true, account })
     : Results.Json(new { configured = false, account = string.IsNullOrWhiteSpace(account) ? null : account }, statusCode: 503));
 
+app.MapPost("/preflight", async (
+    HttpRequest request,
+    IAntelopeBlockchainClient client,
+    IAntelopeTransactionService transactions,
+    CancellationToken ct) =>
+{
+    if (!configured)
+        return Results.Json(
+            new PreflightResponse(false, account, permission, null, null, "configuration", "Arbitrage executor is not configured."),
+            statusCode: 503);
+
+    if (!SecretMatches(request.Headers["X-Arbitrage-Secret"].FirstOrDefault(), sharedSecret))
+        return Results.Json(
+            new PreflightResponse(false, account, permission, null, null, "authorization", "Unauthorized."),
+            statusCode: 401);
+
+    var stage = "get_info";
+    try
+    {
+        var chainInfo = await GetChainInfoAsync(client, rpcEndpointSummary, ct);
+        stage = "get_account";
+        var accountInfo = await client.GetAccountAsync(account, ct);
+        var signingKey = EosioKey.FromPrivateKey(privateKey);
+        var accountPermission = accountInfo.Permissions.FirstOrDefault(candidate =>
+            candidate.PermName.Equals(permission, StringComparison.Ordinal));
+        if (accountPermission is null)
+        {
+            return Results.Json(
+                new PreflightResponse(
+                    false,
+                    account,
+                    permission,
+                    signingKey.PublicKeyK1,
+                    DescribeRpcEndpoint(client, rpcEndpointSummary),
+                    "account_authority",
+                    $"Permission {account}@{permission} does not exist."),
+                statusCode: 503);
+        }
+
+        var directKeyWeight = accountPermission.RequiredAuth.Keys
+            .Where(key =>
+                key.Key.Equals(signingKey.PublicKeyK1, StringComparison.Ordinal) ||
+                key.Key.Equals(signingKey.PublicKey, StringComparison.Ordinal))
+            .Sum(key => (long)key.Weight);
+        if (directKeyWeight < accountPermission.RequiredAuth.Threshold)
+        {
+            return Results.Json(
+                new PreflightResponse(
+                    false,
+                    account,
+                    permission,
+                    signingKey.PublicKeyK1,
+                    DescribeRpcEndpoint(client, rpcEndpointSummary),
+                    "account_authority",
+                    $"The configured key has direct authority weight {directKeyWeight}, below the {accountPermission.RequiredAuth.Threshold} threshold for {account}@{permission}."),
+                statusCode: 503);
+        }
+
+        stage = "serialize_and_sign";
+        var signed = await BuildTransferAsync(
+            transactions,
+            chainInfo,
+            account,
+            privateKey,
+            "eosio.token",
+            transferAbi,
+            new
+            {
+                from = account,
+                to = account,
+                quantity = "0.00000001 WAX",
+                memo = "neo-on-edge signer preflight"
+            },
+            TimeSpan.FromSeconds(60),
+            permission);
+        if (signed.Signatures.Count != 1 ||
+            !signed.Signatures[0].StartsWith("SIG_K1_", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(signed.PackedTransaction))
+        {
+            throw new InvalidOperationException("The signer produced an invalid transaction envelope.");
+        }
+
+        return Results.Ok(new PreflightResponse(
+            true,
+            account,
+            permission,
+            signingKey.PublicKeyK1,
+            DescribeRpcEndpoint(client, rpcEndpointSummary),
+            "ready",
+            null));
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "Arbitrage executor preflight failed at stage {Stage}", stage);
+        return Results.Json(
+            new PreflightResponse(
+                false,
+                account,
+                permission,
+                null,
+                DescribeRpcEndpoint(client, rpcEndpointSummary),
+                stage,
+                Truncate(ex.Message)),
+            statusCode: 503);
+    }
+});
+
 app.MapPost("/transfer", async (
     HttpRequest request,
     TransferRequest transfer,
@@ -57,6 +164,7 @@ app.MapPost("/transfer", async (
     if (!IsPositiveQuantity(transfer.Quantity) || transfer.Memo is null || transfer.Memo.Length > 256)
         return Results.BadRequest(new TransferResponse(null, "Invalid quantity or memo."));
 
+    var stage = "get_info";
     try
     {
         var actionData = new
@@ -67,6 +175,7 @@ app.MapPost("/transfer", async (
             memo = transfer.Memo
         };
         var chainInfo = await GetChainInfoAsync(client, rpcEndpointSummary, ct);
+        stage = "serialize_and_sign";
         var signed = await BuildTransferAsync(
             transactions,
             chainInfo,
@@ -77,9 +186,14 @@ app.MapPost("/transfer", async (
             actionData,
             TimeSpan.FromSeconds(60),
             permission);
+        stage = "push_transaction";
         var result = await PushTransferAsync(client, signed, rpcEndpointSummary, ct);
 
-        return Results.Ok(new TransferResponse(result.TransactionId, null));
+        return Results.Ok(new TransferResponse(
+            result.TransactionId,
+            null,
+            "submitted",
+            DescribeRpcEndpoint(client, rpcEndpointSummary)));
     }
     catch (Exception ex)
     {
@@ -93,7 +207,9 @@ app.MapPost("/transfer", async (
         return Results.Json(
             new TransferResponse(
                 null,
-                $"Executor transfer failed for {transfer.Quantity} from {account} via {transfer.TokenContract} to {transfer.To}: {ex.Message}"),
+                $"Executor transfer failed for {transfer.Quantity} from {account} via {transfer.TokenContract} to {transfer.To}: {Truncate(ex.Message)}",
+                stage,
+                DescribeRpcEndpoint(client, rpcEndpointSummary)),
             statusCode: 500);
     }
 });
@@ -233,6 +349,9 @@ static async Task<TransactionResult> PushTransferAsync(
 static string DescribeRpcEndpoint(IAntelopeBlockchainClient client, string fallback)
     => client is AntelopeHttpClient httpClient ? httpClient.Endpoint : fallback;
 
+static string Truncate(string value)
+    => value.Length <= 1_500 ? value : value[..1_500] + "...";
+
 static AbiDefinition CreateTransferAbi() => new()
 {
     Structs =
@@ -260,4 +379,12 @@ static AbiDefinition CreateTransferAbi() => new()
 };
 
 internal sealed record TransferRequest(string TokenContract, string To, string Quantity, string? Memo);
-internal sealed record TransferResponse(string? TransactionId, string? Error);
+internal sealed record TransferResponse(string? TransactionId, string? Error, string? Stage = null, string? RpcEndpoint = null);
+internal sealed record PreflightResponse(
+    bool Ready,
+    string Account,
+    string Permission,
+    string? PublicKey,
+    string? RpcEndpoint,
+    string Stage,
+    string? Error);

@@ -40,6 +40,10 @@ If your RPC provider is inconsistent, the executor can use a dedicated comma-sep
 
 Split quotes are never automatically executed.
 
+The scanner compares executable direct Alcor quotes with NeoOnEdge and split candidates. `GET /api/arbitrage/status` reports the number of comparable quotes, how often NeoOnEdge produced more output, and the best observed improvement from the latest scan. These measurements demonstrate quote improvement; they do not guarantee final execution output.
+
+Before submitting a trade, the API runs the executor preflight. A failed preflight leaves quote scanning active but skips automatic execution. The status response includes the latest preflight stage and error. Transfer failures identify one of `get_info`, `serialize_and_sign`, or `push_transaction`; chain rejection text and the selected RPC endpoint are retained in backend logs.
+
 ## Risk
 
 The two legs are separate blockchain transactions. Price movement, RPC delay, resource exhaustion, token behavior, or router failure can leave the account holding the intermediate token. The scanner attempts a fresh unwind route, but it cannot guarantee profit or atomicity.

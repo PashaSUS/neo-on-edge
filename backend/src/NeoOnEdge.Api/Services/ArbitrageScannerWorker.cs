@@ -24,12 +24,6 @@ public sealed class ArbitrageScannerWorker(
     private const decimal MaxReasonableDryRunProfitPercent = 25m;
     private const decimal MinSplitImprovementPercent = 0.05m;
 
-    private static readonly HashSet<string> NeoArbitrageSafeTokenIds = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "usdt-usdt.alcor",
-        "fgl-fgltokenmgmt",
-    };
-
     private readonly IDatabase _cache = redis.GetDatabase();
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -61,6 +55,19 @@ public sealed class ArbitrageScannerWorker(
             log.LogError("Automatic arbitrage execution is enabled but the account or executor secret is missing");
             state.MarkSkipped("Automatic execution is enabled but the account or executor secret is missing.");
             return;
+        }
+
+        if (cfg.ArbitrageExecutionEnabled)
+        {
+            var preflight = await execution.GetExecutorPreflightAsync(forceRefresh: true, ct);
+            state.MarkExecutorPreflight(preflight);
+            if (!preflight.Ready)
+            {
+                log.LogError(
+                    "Automatic execution preflight failed at {Stage}: {Error}. Quote scanning will continue without submitting trades until preflight succeeds.",
+                    preflight.Stage,
+                    preflight.Error);
+            }
         }
 
         log.LogInformation(
@@ -157,9 +164,9 @@ public sealed class ArbitrageScannerWorker(
 
         foreach (var token in candidates)
         {
-            var includeNeoRoutes = IsTokenSafeForNeoArbitrage(token);
-            if (!includeNeoRoutes)
-                neoSuppressedForContractSafety++;
+            // TokenCatalogService already removes the durable route_excluded_tokens deny-list.
+            // Intermediate NeoOnEdge hops are independently checked by NeoRouteQuoteService.
+            const bool includeNeoRoutes = true;
 
             foreach (var inputWax in probeAmounts)
             {
@@ -201,12 +208,6 @@ public sealed class ArbitrageScannerWorker(
 
                     foreach (var sellRoute in sellCandidates.Routes)
                     {
-                        if (!IsSafeRouteCombination(token, buyRoute, sellRoute))
-                        {
-                            rejectedUnsafeNeoRoutes++;
-                            continue;
-                        }
-
                         decimal profitWax = sellRoute.OutputAmount - inputWax;
                         if (profitWax <= 0)
                             continue;
@@ -264,7 +265,11 @@ public sealed class ArbitrageScannerWorker(
                 top.Length,
                 rejectedUnsafeNeoRoutes,
                 rejectedSuspiciousRoundTrips,
-                neoSuppressedForContractSafety);
+                neoSuppressedForContractSafety,
+                routeDiagnostics.ComparableQuoteCount,
+                routeDiagnostics.NeoBetterQuoteCount,
+                routeDiagnostics.BestImprovementPercent,
+                routeDiagnostics.BestComparison);
             log.LogInformation(
                 "Arbitrage scan found {Count} dry-run opportunities across {Candidates} tokens (alerted={Alerted}, rejectedUnsafeNeoRoutes={RejectedUnsafeNeoRoutes}, rejectedSuspiciousRoundTrips={RejectedSuspiciousRoundTrips}, neoSuppressedForContractSafety={NeoSuppressedForContractSafety})",
                 opportunities.Count,
@@ -284,7 +289,11 @@ public sealed class ArbitrageScannerWorker(
             0,
             rejectedUnsafeNeoRoutes,
             rejectedSuspiciousRoundTrips,
-            neoSuppressedForContractSafety);
+            neoSuppressedForContractSafety,
+            routeDiagnostics.ComparableQuoteCount,
+            routeDiagnostics.NeoBetterQuoteCount,
+            routeDiagnostics.BestImprovementPercent,
+            routeDiagnostics.BestComparison);
         log.LogInformation(
             "Arbitrage scan found no alert-safe opportunities across {Candidates} tokens (rawOpportunities={RawOpportunities}, rejectedUnsafeNeoRoutes={RejectedUnsafeNeoRoutes}, rejectedSuspiciousRoundTrips={RejectedSuspiciousRoundTrips}, neoSuppressedForContractSafety={NeoSuppressedForContractSafety})",
             candidates.Length,
@@ -418,6 +427,21 @@ public sealed class ArbitrageScannerWorker(
             }
         }
 
+        var directAlcorQuote = quotes.FirstOrDefault(route =>
+            route.Source.Equals("Alcor", StringComparison.OrdinalIgnoreCase));
+        var directNeoQuote = quotes.FirstOrDefault(route =>
+            route.Source.Equals("NeoOnEdge", StringComparison.OrdinalIgnoreCase));
+        if (directAlcorQuote is not null && directNeoQuote is not null)
+        {
+            routeDiagnostics?.RecordQuoteComparison(
+                directNeoQuote.Source,
+                input,
+                output,
+                rawAmount,
+                directNeoQuote.OutputAmount,
+                directAlcorQuote.OutputAmount);
+        }
+
         if (includeSplitRoutes && includeNeoRoutes && quotes.Count >= 2)
         {
             var split = await GetBestSplitQuoteAsync(
@@ -436,6 +460,16 @@ public sealed class ArbitrageScannerWorker(
 
             lookupCount += split.LookupCount;
             var bestDirectOutput = quotes.Max(x => x.OutputAmount);
+            if (split.Route is not null && directAlcorQuote is not null)
+            {
+                routeDiagnostics?.RecordQuoteComparison(
+                    split.Route.Source,
+                    input,
+                    output,
+                    rawAmount,
+                    split.Route.OutputAmount,
+                    directAlcorQuote.OutputAmount);
+            }
             if (split.Route is not null && IsMeaningfullyBetter(split.Route.OutputAmount, bestDirectOutput))
                 quotes.Add(split.Route);
         }
@@ -617,7 +651,7 @@ public sealed class ArbitrageScannerWorker(
             return null;
 
         var executionSlippage = Math.Clamp(cfg.ArbitrageExecutionSlippage, 0.1, 25.0);
-        var includeNeoRoutes = IsTokenSafeForNeoArbitrage(opportunity.Token);
+        const bool includeNeoRoutes = true;
         var buyCandidates = await GetQuoteCandidatesAsync(
             alcorRouter,
             neoRouter,
@@ -653,7 +687,6 @@ public sealed class ArbitrageScannerWorker(
 
             var sellRoute = sellCandidates.Routes
                 .Where(IsAutoExecutableRoute)
-                .Where(route => IsSafeRouteCombination(opportunity.Token, buyRoute, route))
                 .OrderByDescending(route => route.OutputAmount)
                 .FirstOrDefault();
             if (sellRoute is null)
@@ -700,6 +733,20 @@ public sealed class ArbitrageScannerWorker(
                 "Automatic arbitrage execution skipped because no opportunity met the executable-route and max-execution filters (maxExecutionWax={MaxExecutionWax})",
                 cfg.ArbitrageMaxExecutionWax);
             return new ExecutionAttemptResult(false, false, "No opportunity met the automatic execution rules in this scan.");
+        }
+
+        var preflight = await execution.GetExecutorPreflightAsync(forceRefresh: false, ct);
+        state.MarkExecutorPreflight(preflight);
+        if (!preflight.Ready)
+        {
+            log.LogError(
+                "Automatic arbitrage execution skipped because executor preflight failed at {Stage}: {Error}",
+                preflight.Stage,
+                preflight.Error);
+            return new ExecutionAttemptResult(
+                false,
+                false,
+                $"Automatic execution skipped: executor preflight failed at {preflight.Stage}: {preflight.Error ?? "unknown error"}.");
         }
 
         var cooldown = TimeSpan.FromMinutes(Math.Clamp(cfg.ArbitrageExecutionCooldownMinutes, 1, 1_440));
@@ -757,7 +804,7 @@ public sealed class ArbitrageScannerWorker(
                 opportunity.Token.Precision,
                 WaxPrecision,
                 cfg,
-                IsTokenSafeForNeoArbitrage(opportunity.Token),
+                includeNeoRoutes: true,
                 ct,
                 useAlcorCache: false,
                 includeSplitRoutes: true,
@@ -974,10 +1021,14 @@ public sealed class ArbitrageScannerWorker(
             return;
 
         log.LogInformation(
-            "Arbitrage route diagnostics: attempts={Attempts}, successes={Successes}, failures={Failures}, attemptsBySource={AttemptsBySource}, failuresByReason={FailuresByReason}",
+            "Arbitrage route diagnostics: attempts={Attempts}, successes={Successes}, failures={Failures}, comparableQuotes={ComparableQuotes}, neoBetterQuotes={NeoBetterQuotes}, bestImprovementPercent={BestImprovementPercent}, bestComparison={BestComparison}, attemptsBySource={AttemptsBySource}, failuresByReason={FailuresByReason}",
             diagnostics.TotalAttempts,
             diagnostics.TotalSuccesses,
             diagnostics.TotalFailures,
+            diagnostics.ComparableQuoteCount,
+            diagnostics.NeoBetterQuoteCount,
+            diagnostics.BestImprovementPercent,
+            diagnostics.BestComparison,
             diagnostics.FormatAttemptsBySource(),
             diagnostics.FormatFailuresByReason());
 
@@ -1072,23 +1123,8 @@ public sealed class ArbitrageScannerWorker(
         => token.Symbol.Equals("WAX", StringComparison.OrdinalIgnoreCase) &&
            token.Contract.Equals("eosio.token", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsSafeRouteCombination(TokenCatalogItem token, RouteQuote buyRoute, RouteQuote sellRoute)
-    {
-        if (!UsesNeoRoute(buyRoute) && !UsesNeoRoute(sellRoute))
-            return true;
-
-        return IsTokenSafeForNeoArbitrage(token);
-    }
-
-    private static bool IsTokenSafeForNeoArbitrage(TokenCatalogItem token)
-        => NeoArbitrageSafeTokenIds.Contains(token.Id) ||
-           NeoArbitrageSafeTokenIds.Contains($"{token.Symbol.ToLowerInvariant()}-{token.Contract}");
-
     private static bool IsAlertSafeOpportunity(ArbitrageOpportunity opportunity)
     {
-        if (!IsSafeRouteCombination(opportunity.Token, opportunity.BuyRoute, opportunity.SellRoute))
-            return false;
-
         if (opportunity.ProfitPercent <= 0 || opportunity.ProfitPercent > MaxReasonableDryRunProfitPercent)
             return false;
 
@@ -1099,27 +1135,13 @@ public sealed class ArbitrageScannerWorker(
         return opportunity.FinalWax <= maxFinalWax;
     }
 
-    private static bool UsesNeoRoute(RouteQuote route)
-        => route.Source.Equals("NeoOnEdge", StringComparison.OrdinalIgnoreCase) ||
-           route.Legs.Any(leg => leg.Source.Equals("NeoOnEdge", StringComparison.OrdinalIgnoreCase));
-
     private static bool IsDirectExecutableRoute(RouteQuote route)
         => !route.Source.Equals("Split", StringComparison.OrdinalIgnoreCase) &&
            !string.IsNullOrWhiteSpace(route.Contract) &&
            !string.IsNullOrWhiteSpace(route.Memo);
 
     private static bool IsAutoExecutableRoute(RouteQuote route)
-    {
-        if (IsDirectExecutableRoute(route))
-            return true;
-
-        return route.Source.Equals("Split", StringComparison.OrdinalIgnoreCase) &&
-               route.Legs.Count >= 2 &&
-               route.Legs.All(leg =>
-                   leg.InputRaw > 0 &&
-                   !string.IsNullOrWhiteSpace(leg.Contract) &&
-                   !string.IsNullOrWhiteSpace(leg.Memo));
-    }
+        => IsDirectExecutableRoute(route);
 
     private static string FormatWax(decimal value)
         => value.ToString("0.########", CultureInfo.InvariantCulture);
@@ -1179,6 +1201,10 @@ public sealed class ArbitrageScannerWorker(
         public int TotalAttempts => attemptsBySource.Values.Sum();
         public int TotalSuccesses => successesBySource.Values.Sum();
         public int TotalFailures => failuresByReason.Values.Sum();
+        public int ComparableQuoteCount { get; private set; }
+        public int NeoBetterQuoteCount { get; private set; }
+        public decimal BestImprovementPercent { get; private set; }
+        public string? BestComparison { get; private set; }
         public IReadOnlyList<RouteFailureSample> Samples => samples;
 
         public void RecordAttempt(string source)
@@ -1186,6 +1212,30 @@ public sealed class ArbitrageScannerWorker(
 
         public void RecordSuccess(string source)
             => Increment(successesBySource, source);
+
+        public void RecordQuoteComparison(
+            string candidateSource,
+            string input,
+            string output,
+            long inputRaw,
+            decimal candidateOutput,
+            decimal alcorOutput)
+        {
+            if (candidateOutput <= 0 || alcorOutput <= 0)
+                return;
+
+            ComparableQuoteCount++;
+            var improvementPercent = (candidateOutput - alcorOutput) / alcorOutput * 100m;
+            if (improvementPercent <= 0)
+                return;
+
+            NeoBetterQuoteCount++;
+            if (BestComparison is not null && improvementPercent <= BestImprovementPercent)
+                return;
+
+            BestImprovementPercent = improvementPercent;
+            BestComparison = $"{candidateSource}: {input}->{output}, inputRaw={inputRaw}, improvement={improvementPercent:0.####}%";
+        }
 
         public void RecordFailure(
             string source,

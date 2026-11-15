@@ -18,7 +18,7 @@ public sealed class EosioSignatureProvider
     /// <param name="privateKeyWif">Private key in WIF format</param>
     public EosioSignatureProvider(string privateKeyWif)
     {
-        _key = EosioKey.FromWif(privateKeyWif);
+        _key = EosioKey.FromPrivateKey(privateKeyWif);
     }
 
     /// <summary>

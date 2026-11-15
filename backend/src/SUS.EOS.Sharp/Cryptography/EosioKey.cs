@@ -325,11 +325,12 @@ public sealed class EosioKey
     private static string EncodePublicKey(byte[] publicKey)
     {
         // EOSIO public key format: EOS + base58(publicKey + checksum)
-        using var sha256 = SHA256.Create();
-        var hash1 = sha256.ComputeHash(publicKey);
-        var hash2 = sha256.ComputeHash(hash1);
+        var ripemd160 = new RipeMD160Digest();
+        var hash = new byte[ripemd160.GetDigestSize()];
+        ripemd160.BlockUpdate(publicKey, 0, publicKey.Length);
+        ripemd160.DoFinal(hash, 0);
         var checksum = new byte[4];
-        Array.Copy(hash2, 0, checksum, 0, 4);
+        Array.Copy(hash, 0, checksum, 0, 4);
 
         var data = new byte[publicKey.Length + checksum.Length];
         Array.Copy(publicKey, 0, data, 0, publicKey.Length);

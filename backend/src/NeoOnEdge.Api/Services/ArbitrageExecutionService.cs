@@ -12,6 +12,10 @@ public sealed class ArbitrageExecutionService(
     IOptions<AppSettings> settings,
     ILogger<ArbitrageExecutionService> log)
 {
+    private readonly SemaphoreSlim preflightGate = new(1, 1);
+    private ExecutorPreflightResponse? cachedPreflight;
+    private DateTimeOffset preflightExpiresAt = DateTimeOffset.MinValue;
+
     public bool IsConfigured =>
         settings.Value.ArbitrageExecutionEnabled &&
         !string.IsNullOrWhiteSpace(settings.Value.ArbitrageAccount) &&
@@ -64,6 +68,8 @@ public sealed class ArbitrageExecutionService(
         if (!IsConfigured)
             throw new InvalidOperationException("Automatic arbitrage execution is not fully configured.");
 
+        await EnsureExecutorReadyAsync(ct);
+
         using var request = new HttpRequestMessage(HttpMethod.Post, "/transfer");
         request.Headers.Add("X-Arbitrage-Secret", settings.Value.ArbitrageExecutorSecret);
         request.Content = JsonContent.Create(new
@@ -87,14 +93,91 @@ public sealed class ArbitrageExecutionService(
                 to,
                 $"{FormatRawAmount(rawAmount, token.Precision)} {token.Symbol}",
                 (int)response.StatusCode,
-                result?.Error,
+                FormatExecutorError(result),
                 Truncate(body));
             throw new InvalidOperationException(
-                result?.Error ??
+                FormatExecutorError(result) ??
                 $"Arbitrage executor returned HTTP {(int)response.StatusCode} from {settings.Value.ArbitrageExecutorUrl}/transfer.");
         }
 
         return result.TransactionId;
+    }
+
+    public async Task<ExecutorPreflightResponse> GetExecutorPreflightAsync(
+        bool forceRefresh,
+        CancellationToken ct)
+    {
+        if (!IsConfigured)
+            return new ExecutorPreflightResponse(
+                false,
+                null,
+                null,
+                "configuration",
+                "Automatic arbitrage execution is not fully configured.");
+
+        if (!forceRefresh && cachedPreflight is not null && DateTimeOffset.UtcNow < preflightExpiresAt)
+            return cachedPreflight;
+
+        await preflightGate.WaitAsync(ct);
+        try
+        {
+            if (!forceRefresh && cachedPreflight is not null && DateTimeOffset.UtcNow < preflightExpiresAt)
+                return cachedPreflight;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/preflight");
+            request.Headers.Add("X-Arbitrage-Secret", settings.Value.ArbitrageExecutorSecret);
+            using var http = httpFactory.CreateClient("arbitrage-executor");
+            using var response = await http.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            var result = TryReadPreflightResponse(body) ?? new ExecutorPreflightResponse(
+                false,
+                null,
+                null,
+                "preflight_response",
+                response.StatusCode == System.Net.HttpStatusCode.NotFound
+                    ? "The executor does not expose /preflight. Rebuild and redeploy the arbitrage-executor image."
+                    : $"Executor preflight returned an unreadable HTTP {(int)response.StatusCode} response.");
+
+            if (!response.IsSuccessStatusCode || !result.Ready)
+            {
+                log.LogError(
+                    "Arbitrage executor preflight failed: endpoint={Endpoint}, HTTP {StatusCode}, stage={Stage}, rpcEndpoint={RpcEndpoint}, error={Error}, body={Body}",
+                    settings.Value.ArbitrageExecutorUrl,
+                    (int)response.StatusCode,
+                    result.Stage,
+                    result.RpcEndpoint,
+                    result.Error,
+                    Truncate(body));
+            }
+
+            cachedPreflight = result;
+            preflightExpiresAt = DateTimeOffset.UtcNow.Add(result.Ready ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(15));
+            return result;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            var result = new ExecutorPreflightResponse(
+                false,
+                null,
+                null,
+                "executor_connection",
+                $"Could not reach arbitrage executor at {settings.Value.ArbitrageExecutorUrl}: {ex.Message}");
+            cachedPreflight = result;
+            preflightExpiresAt = DateTimeOffset.UtcNow.AddSeconds(15);
+            return result;
+        }
+        finally
+        {
+            preflightGate.Release();
+        }
+    }
+
+    private async Task EnsureExecutorReadyAsync(CancellationToken ct)
+    {
+        var preflight = await GetExecutorPreflightAsync(forceRefresh: false, ct);
+        if (!preflight.Ready)
+            throw new InvalidOperationException(
+                $"Arbitrage executor preflight failed at {preflight.Stage}: {preflight.Error ?? "unknown error"}");
     }
 
     private static string FormatRawAmount(long rawAmount, int precision)
@@ -129,6 +212,38 @@ public sealed class ArbitrageExecutionService(
         }
     }
 
+    private static ExecutorPreflightResponse? TryReadPreflightResponse(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<ExecutorPreflightResponse>(
+                body,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? FormatExecutorError(TransferResponse? response)
+    {
+        if (response is null)
+            return null;
+
+        var details = new List<string>();
+        if (!string.IsNullOrWhiteSpace(response.Stage))
+            details.Add($"stage={response.Stage}");
+        if (!string.IsNullOrWhiteSpace(response.RpcEndpoint))
+            details.Add($"rpc={response.RpcEndpoint}");
+
+        var prefix = details.Count == 0 ? "" : $"Executor {string.Join(", ", details)}: ";
+        return prefix + (response.Error ?? "transfer was rejected without an error message");
+    }
+
     private static string Truncate(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -139,5 +254,14 @@ public sealed class ArbitrageExecutionService(
 
     private sealed record TransferResponse(
         [property: JsonPropertyName("transactionId")] string? TransactionId,
-        [property: JsonPropertyName("error")] string? Error);
+        [property: JsonPropertyName("error")] string? Error,
+        [property: JsonPropertyName("stage")] string? Stage,
+        [property: JsonPropertyName("rpcEndpoint")] string? RpcEndpoint);
 }
+
+public sealed record ExecutorPreflightResponse(
+    [property: JsonPropertyName("ready")] bool Ready,
+    [property: JsonPropertyName("publicKey")] string? PublicKey,
+    [property: JsonPropertyName("rpcEndpoint")] string? RpcEndpoint,
+    [property: JsonPropertyName("stage")] string Stage,
+    [property: JsonPropertyName("error")] string? Error);

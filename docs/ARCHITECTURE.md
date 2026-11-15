@@ -26,8 +26,10 @@ A live Alcor route is converted to a `poolId@a2` step only when it contains one 
 `NeoOnEdge.ArbitrageExecutor` is a separate .NET process using `SUS.EOS.Sharp`. It:
 
 - receives only internal allow-listed transfer requests,
-- converts transfer JSON to binary through `abi_json_to_bin`,
+- serializes the standard token transfer ABI locally,
 - signs the binary transaction locally,
 - broadcasts through the configured WAX RPC endpoint.
+
+Before automatic execution, the API calls the executor's authenticated preflight. It verifies RPC access, account permission existence, direct signing-key authority, local transfer serialization, and signature-envelope creation. Transfer errors identify whether failure happened during chain-info lookup, serialization/signing, or transaction broadcast.
 
 The web API knows the account and executor shared secret, but not the private key.

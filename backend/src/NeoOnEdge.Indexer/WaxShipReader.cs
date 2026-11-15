@@ -52,7 +52,7 @@ public sealed class WaxShipReader : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         // 1. Catch up historical data via Hyperion HTTP
-        await RunHyperionCatchup(ct);
+        await TryRunHyperionCatchup(ct);
 
         var endpoints = GetShipEndpoints();
         if (!_cfg.ShipEnabled || endpoints.Count == 0)
@@ -149,6 +149,24 @@ public sealed class WaxShipReader : BackgroundService
         _lastHyperionFallbackAt = DateTimeOffset.UtcNow;
     }
 
+    private async Task<bool> TryRunHyperionCatchup(CancellationToken ct)
+    {
+        try
+        {
+            await RunHyperionCatchup(ct);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Hyperion catch-up failed; indexing will retry without stopping the backend host");
+            return false;
+        }
+    }
+
     private async Task<long> GetShipStartBlockAsync(CancellationToken ct)
     {
         await using var scope = _scopes.CreateAsyncScope();
@@ -180,7 +198,7 @@ public sealed class WaxShipReader : BackgroundService
         var interval = TimeSpan.FromSeconds(Math.Max(5, _cfg.HyperionFallbackIntervalSeconds));
         if (DateTimeOffset.UtcNow - _lastHyperionFallbackAt < interval) return;
 
-        await RunHyperionCatchup(ct);
+        await TryRunHyperionCatchup(ct);
     }
 
     private async Task RunHyperionFallbackLoop(CancellationToken ct)
@@ -188,7 +206,7 @@ public sealed class WaxShipReader : BackgroundService
         var intervalSeconds = Math.Max(5, _cfg.HyperionFallbackIntervalSeconds);
         while (!ct.IsCancellationRequested)
         {
-            await RunHyperionCatchup(ct);
+            await TryRunHyperionCatchup(ct);
             await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), ct);
         }
     }

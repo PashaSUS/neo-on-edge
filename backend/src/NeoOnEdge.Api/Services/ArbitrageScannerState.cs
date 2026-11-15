@@ -16,6 +16,10 @@ public sealed class ArbitrageScannerState
         DiscordConfigured: false,
         ExecutionEnabled: false,
         ExecutionConfigured: false,
+        ExecutionReady: null,
+        LastExecutorPreflightAt: null,
+        LastExecutorPreflightStage: null,
+        LastExecutorPreflightError: null,
         ScanIntervalSeconds: 0,
         LastStartedAt: null,
         LastCompletedAt: null,
@@ -28,7 +32,11 @@ public sealed class ArbitrageScannerState
         LastAlertedOpportunityCount: 0,
         LastRejectedUnsafeNeoRoutes: 0,
         LastRejectedSuspiciousRoundTrips: 0,
-        LastNeoSuppressedForContractSafety: 0);
+        LastNeoSuppressedForContractSafety: 0,
+        LastComparableQuoteCount: 0,
+        LastNeoBetterQuoteCount: 0,
+        LastBestNeoImprovementPercent: 0,
+        LastBestNeoComparison: null);
 
     public void MarkConfigured(
         bool enabled,
@@ -62,6 +70,20 @@ public sealed class ArbitrageScannerState
         }
     }
 
+    public void MarkExecutorPreflight(ExecutorPreflightResponse preflight)
+    {
+        lock (gate)
+        {
+            Current = Current with
+            {
+                ExecutionReady = preflight.Ready,
+                LastExecutorPreflightAt = DateTimeOffset.UtcNow,
+                LastExecutorPreflightStage = preflight.Stage,
+                LastExecutorPreflightError = preflight.Error
+            };
+        }
+    }
+
     public void MarkScanStarted()
     {
         lock (gate)
@@ -84,7 +106,11 @@ public sealed class ArbitrageScannerState
         int alertedOpportunityCount,
         int rejectedUnsafeNeoRoutes,
         int rejectedSuspiciousRoundTrips,
-        int neoSuppressedForContractSafety)
+        int neoSuppressedForContractSafety,
+        int comparableQuoteCount,
+        int neoBetterQuoteCount,
+        decimal bestNeoImprovementPercent,
+        string? bestNeoComparison)
     {
         lock (gate)
         {
@@ -98,7 +124,11 @@ public sealed class ArbitrageScannerState
                 LastAlertedOpportunityCount = alertedOpportunityCount,
                 LastRejectedUnsafeNeoRoutes = rejectedUnsafeNeoRoutes,
                 LastRejectedSuspiciousRoundTrips = rejectedSuspiciousRoundTrips,
-                LastNeoSuppressedForContractSafety = neoSuppressedForContractSafety
+                LastNeoSuppressedForContractSafety = neoSuppressedForContractSafety,
+                LastComparableQuoteCount = comparableQuoteCount,
+                LastNeoBetterQuoteCount = neoBetterQuoteCount,
+                LastBestNeoImprovementPercent = bestNeoImprovementPercent,
+                LastBestNeoComparison = bestNeoComparison
             };
         }
     }
@@ -123,6 +153,10 @@ public sealed record ArbitrageScannerSnapshot(
     bool DiscordConfigured,
     bool ExecutionEnabled,
     bool ExecutionConfigured,
+    bool? ExecutionReady,
+    DateTimeOffset? LastExecutorPreflightAt,
+    string? LastExecutorPreflightStage,
+    string? LastExecutorPreflightError,
     int ScanIntervalSeconds,
     DateTimeOffset? LastStartedAt,
     DateTimeOffset? LastCompletedAt,
@@ -135,4 +169,8 @@ public sealed record ArbitrageScannerSnapshot(
     int LastAlertedOpportunityCount,
     int LastRejectedUnsafeNeoRoutes,
     int LastRejectedSuspiciousRoundTrips,
-    int LastNeoSuppressedForContractSafety);
+    int LastNeoSuppressedForContractSafety,
+    int LastComparableQuoteCount,
+    int LastNeoBetterQuoteCount,
+    decimal LastBestNeoImprovementPercent,
+    string? LastBestNeoComparison);

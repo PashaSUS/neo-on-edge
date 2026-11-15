@@ -84,7 +84,13 @@ public static class ActionDispatch
             UpdatedAtTime  = ts,
         };
 
-        if (db.SwapV3Orders.Local.Any(x => x.GlobalSequence == seq))
+        if (IsTrackedDuplicate(
+                db.SwapV3Orders.Local,
+                row.GlobalSequence,
+                x => x.GlobalSequence,
+                x => x.TrxId == row.TrxId &&
+                     x.ActionOrdinal == row.ActionOrdinal &&
+                     x.Src == row.Src))
             return;
 
         db.SwapV3Orders.Add(row);
@@ -140,7 +146,13 @@ public static class ActionDispatch
             UpdatedAtTime  = ts,
         };
 
-        if (db.MarketMatches.Local.Any(x => x.GlobalSequence == seq))
+        if (IsTrackedDuplicate(
+                db.MarketMatches.Local,
+                row.GlobalSequence,
+                x => x.GlobalSequence,
+                x => x.TrxId == row.TrxId &&
+                     x.ActionOrdinal == row.ActionOrdinal &&
+                     x.Src == row.Src))
             return;
 
         db.MarketMatches.Add(row);
@@ -175,7 +187,13 @@ public static class ActionDispatch
             GlobalSequence = seq,
             UpdatedAtTime  = ts,
         };
-        if (db.LimitOrderFills.Local.Any(x => x.GlobalSequence == seq))
+        if (IsTrackedDuplicate(
+                db.LimitOrderFills.Local,
+                row.GlobalSequence,
+                x => x.GlobalSequence,
+                x => x.TrxId == row.TrxId &&
+                     x.ActionOrdinal == row.ActionOrdinal &&
+                     x.Src == row.Src))
             return;
 
         db.LimitOrderFills.Add(row);
@@ -205,7 +223,13 @@ public static class ActionDispatch
             GlobalSequence = seq,
             UpdatedAtTime  = ts,
         };
-        if (db.LimitOrderCloses.Local.Any(x => x.GlobalSequence == seq))
+        if (IsTrackedDuplicate(
+                db.LimitOrderCloses.Local,
+                row.GlobalSequence,
+                x => x.GlobalSequence,
+                x => x.TrxId == row.TrxId &&
+                     x.ActionOrdinal == row.ActionOrdinal &&
+                     x.Src == row.Src))
             return;
 
         db.LimitOrderCloses.Add(row);
@@ -280,7 +304,13 @@ public static class ActionDispatch
             GlobalSequence = seq, CreatedAtBlock = block, UpdatedAtTime = ts,
         };
 
-        if (db.SwapOrders.Local.Any(x => x.GlobalSequence == seq))
+        if (IsTrackedDuplicate(
+                db.SwapOrders.Local,
+                row.GlobalSequence,
+                x => x.GlobalSequence,
+                x => x.TrxId == row.TrxId &&
+                     x.ActionOrdinal == row.ActionOrdinal &&
+                     x.Src == row.Src))
             return;
 
         db.SwapOrders.Add(row);
@@ -293,6 +323,17 @@ public static class ActionDispatch
             PublishTokenUpdate(pub, row.CodeIn, "", row.PrecisionIn);
             PublishTokenUpdate(pub, row.CodeOut, "", row.PrecisionOut);
         }
+    }
+
+    private static bool IsTrackedDuplicate<TEntity>(
+        IEnumerable<TEntity> tracked,
+        long globalSequence,
+        Func<TEntity, long> sequenceSelector,
+        Func<TEntity, bool> hasSamePrimaryKey)
+    {
+        return tracked.Any(entity =>
+            (globalSequence > 0 && sequenceSelector(entity) == globalSequence) ||
+            hasSamePrimaryKey(entity));
     }
 
     private static void PublishTokenUpdate(ISubscriber pub, string symbol, string contract, int precision)

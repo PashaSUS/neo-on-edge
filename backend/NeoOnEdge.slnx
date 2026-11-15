@@ -7,4 +7,7 @@
     <Project Path="src/NeoOnEdge.Workers/NeoOnEdge.Workers.csproj" />
     <Project Path="src/SUS.EOS.Sharp/SUS.EOS.Sharp.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SUS.EOS.Sharp.Tests/SUS.EOS.Sharp.Tests.csproj" />
+  </Folder>
 </Solution>
