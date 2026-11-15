@@ -79,6 +79,8 @@ const DEFAULT_CONTRACT_ACCOUNT =
 const TOKEN_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
 const MAX_REASONABLE_NEO_ALCOR_MULTIPLIER = 2;
 const MAX_REASONABLE_SPLIT_NEO_MULTIPLIER = 1.75;
+const QUOTE_INPUT_DEBOUNCE_MS = 650;
+const QUOTE_REFRESH_INTERVAL_MS = 30_000;
 const ROUTE_LABELS: Record<RoutePreference, string> = {
   best: "Best price",
   alcor: "Alcor router",
@@ -109,6 +111,17 @@ function toRawAmount(value: string, precision: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.round(parsed * 10 ** precision);
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+
+  return debouncedValue;
 }
 
 function formatTokenAmount(value: string, symbol: string) {
@@ -606,6 +619,8 @@ export default function SwapPage() {
     () => toRawAmount(amount, fromToken.precision),
     [amount, fromToken.precision],
   );
+  const quotedRawAmount = useDebouncedValue(rawAmount, QUOTE_INPUT_DEBOUNCE_MS);
+  const quoteInputSettled = quotedRawAmount === rawAmount;
   const manualMinReturnRaw = useMemo(
     () => toRawAmount(minReturn, toToken.precision),
     [minReturn, toToken.precision],
@@ -748,25 +763,31 @@ export default function SwapPage() {
       "swap-route",
       fromToken.id,
       toToken.id,
-      rawAmount,
+      quotedRawAmount,
       quoteReceiver,
       slippage,
       maxHops,
     ],
-    queryFn: () =>
-      api.route({
-        input: fromToken.id,
-        output: toToken.id,
-        amount: rawAmount,
-        receiver: quoteReceiver,
-        inputPrecision: fromToken.precision,
-        outputPrecision: toToken.precision,
-        slippage,
-        maxHops,
-      }),
-    enabled: rawAmount > 0 && fromToken.id !== toToken.id,
+    queryFn: ({ signal }) =>
+      api.route(
+        {
+          input: fromToken.id,
+          output: toToken.id,
+          amount: quotedRawAmount,
+          receiver: quoteReceiver,
+          inputPrecision: fromToken.precision,
+          outputPrecision: toToken.precision,
+          slippage,
+          maxHops,
+        },
+        signal,
+      ),
+    enabled:
+      quoteInputSettled && quotedRawAmount > 0 && fromToken.id !== toToken.id,
     refetchInterval:
-      rawAmount > 0 && fromToken.id !== toToken.id ? 12_000 : false,
+      quoteInputSettled && quotedRawAmount > 0 && fromToken.id !== toToken.id
+        ? QUOTE_REFRESH_INTERVAL_MS
+        : false,
     meta: { errorTitle: "Route quote failed" },
   });
 
@@ -775,26 +796,32 @@ export default function SwapPage() {
       "alcor-route",
       fromToken.id,
       toToken.id,
-      rawAmount,
+      quotedRawAmount,
       quoteReceiver,
       slippage,
       maxHops,
       fromToken.precision,
     ],
-    queryFn: () =>
-      api.alcorRoute({
-        input: fromToken.id,
-        output: toToken.id,
-        amount: rawAmount,
-        receiver: quoteReceiver,
-        inputPrecision: fromToken.precision,
-        outputPrecision: toToken.precision,
-        slippage,
-        maxHops,
-      }),
-    enabled: rawAmount > 0 && fromToken.id !== toToken.id,
+    queryFn: ({ signal }) =>
+      api.alcorRoute(
+        {
+          input: fromToken.id,
+          output: toToken.id,
+          amount: quotedRawAmount,
+          receiver: quoteReceiver,
+          inputPrecision: fromToken.precision,
+          outputPrecision: toToken.precision,
+          slippage,
+          maxHops,
+        },
+        signal,
+      ),
+    enabled:
+      quoteInputSettled && quotedRawAmount > 0 && fromToken.id !== toToken.id,
     refetchInterval:
-      rawAmount > 0 && fromToken.id !== toToken.id ? 12_000 : false,
+      quoteInputSettled && quotedRawAmount > 0 && fromToken.id !== toToken.id
+        ? QUOTE_REFRESH_INTERVAL_MS
+        : false,
     meta: { errorTitle: "Alcor route failed", toast: false },
   });
 
@@ -821,8 +848,11 @@ export default function SwapPage() {
   }, [queryClient]);
 
   const combinedQuote = useMemo(
-    () => combineRouteQuotes(neoQuoteQuery.data, alcorRouteQuery.data),
-    [alcorRouteQuery.data, neoQuoteQuery.data],
+    () =>
+      quoteInputSettled
+        ? combineRouteQuotes(neoQuoteQuery.data, alcorRouteQuery.data)
+        : undefined,
+    [alcorRouteQuery.data, neoQuoteQuery.data, quoteInputSettled],
   );
   const quoteQuery = {
     data: combinedQuote,
@@ -841,7 +871,8 @@ export default function SwapPage() {
   const alcorAvailable = Boolean(quoteQuery.data?.alcor);
   const neoAvailable = Boolean(quoteQuery.data?.neo);
   const splitAvailable = Boolean(quoteQuery.data?.split);
-  const routeIsLoading = quoteQuery.isFetching && rawAmount > 0;
+  const routeIsLoading =
+    rawAmount > 0 && (!quoteInputSettled || quoteQuery.isFetching);
   const receivePreview = displayAmount(selectedRoute?.output);
   const finalContract = selectedRoute?.contract ?? DEFAULT_CONTRACT_ACCOUNT;
   const finalMemo = selectedRoute?.memo ?? manualMemo;

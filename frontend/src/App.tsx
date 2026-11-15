@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate, NavLink, Outlet, RouterProvider } from 'react-router-dom'
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ToastViewport } from './components/ToastViewport'
+import { ApiError } from './api/neoEdgeApi'
 import { getErrorMessage, pushToast } from './lib/toastStore'
 import { cn } from './lib/utils'
 import { WalletProvider } from './lib/walletContext'
@@ -33,7 +34,8 @@ const qc = new QueryClient({
   }),
   defaultOptions: {
     queries: {
-      retry: 2,
+      retry: (failureCount, error) =>
+        !(error instanceof ApiError && error.status === 429) && failureCount < 2,
       staleTime: 20_000,
       refetchOnWindowFocus: false,
     },

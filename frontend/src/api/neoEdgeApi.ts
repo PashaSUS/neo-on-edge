@@ -178,8 +178,8 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return r.json() as Promise<T>
 }
 
-async function getAbsolute<T>(url: string): Promise<T> {
-  const r = await fetch(url, { cache: 'no-store' })
+async function getAbsolute<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(url, { cache: 'no-store', signal })
   if (!r.ok) throw await toApiError(r)
   return r.json() as Promise<T>
 }
@@ -247,7 +247,7 @@ export const api = {
   balances: (account: string, tokens: string[]) =>
     get<TokenBalance[]>(`/balances/${encodeURIComponent(account)}?${qs({ tokens: tokens.join(',') })}`),
 
-  route: (request: RouteRequest) =>
+  route: (request: RouteRequest, signal?: AbortSignal) =>
     get<SwapRoute>(`/route?${qs({
       input: request.input,
       output: request.output,
@@ -258,9 +258,9 @@ export const api = {
       slippage: request.slippage ?? 1,
       maxHops: request.maxHops ?? 3,
       fresh: request.fresh ? true : undefined,
-    })}`),
+    })}`, signal),
 
-  alcorRoute: async (request: RouteRequest) => {
+  alcorRoute: async (request: RouteRequest, signal?: AbortSignal) => {
     const receiver = request.receiver ?? ''
     const route = await getAbsolute<AlcorRoute>(`${ALCOR_BASE}/api/v2/swapRouter/getRoute?${qs({
       trade_type: 'EXACT_INPUT',
@@ -272,7 +272,7 @@ export const api = {
       includePoolDetails: true,
       receiver,
       maxHops: request.maxHops ?? 3,
-    })}`)
+    })}`, signal)
 
     return { ...route, receiver }
   },
